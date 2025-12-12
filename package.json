@@ -24,6 +24,7 @@
     "@types/aws-lambda": "^8.10.159",
     "@types/node": "^25.0.0",
     "aws-cdk": "^2.1034.0",
+    "cdk-nextjs-standalone": "^4.3.3",
     "tsx": "^4.21.0"
   }
 }
