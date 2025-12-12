@@ -1,0 +1,29 @@
+{
+  "name": "aws-scale-to-zero-container-service",
+  "version": "1.0.0",
+  "description": "Scale-To-Zero Container Service pattern in AWS.",
+  "main": "index.js",
+  "scripts": {
+    "test": "exit 0",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all",
+    "destroy": "cdk destroy --all",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "check": "biome check --write ."
+  },
+  "keywords": [],
+  "author": "Sepehr Laal",
+  "license": "MIT",
+  "dependencies": {
+    "aws-cdk-lib": "2.232.1",
+    "constructs": "^10.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
+    "@types/aws-lambda": "^8.10.159",
+    "@types/node": "^25.0.0",
+    "aws-cdk": "^2.1034.0",
+    "tsx": "^4.21.0"
+  }
+}
