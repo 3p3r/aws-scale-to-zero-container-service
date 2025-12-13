@@ -16,6 +16,8 @@
   "author": "Sepehr Laal",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-servicediscovery": "^3.0.0",
+    "@aws-sdk/client-ecs": "^3.0.0",
     "aws-cdk-lib": "2.232.1",
     "constructs": "^10.0.0"
   },
