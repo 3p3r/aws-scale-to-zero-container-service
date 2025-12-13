@@ -111,6 +111,38 @@ export class InfraStack extends cdk.Stack {
       }),
     );
 
+    const autoscaler = new NodejsFunction(this, "Autoscaler", {
+      entry: "lib/lambdas/autoscaler.ts",
+      runtime: lambda.Runtime.NODEJS_LATEST,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 256,
+    });
+
+    autoscaler.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ecs:ListTasks",
+          "ecs:ListContainerInstances",
+          "ecs:DescribeContainerInstances",
+          "ecs:DescribeTasks",
+        ],
+        resources: ["*"],
+      }),
+    );
+
+    autoscaler.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:SetInstanceProtection",
+        ],
+        resources: ["*"],
+      }),
+    );
+
     const taskStateChangeRule = new events.Rule(
       this,
       "ECSTaskStateChangeRule",
@@ -126,6 +158,7 @@ export class InfraStack extends cdk.Stack {
     );
 
     taskStateChangeRule.addTarget(new targets.LambdaFunction(discovery));
+    taskStateChangeRule.addTarget(new targets.LambdaFunction(autoscaler));
 
     // todo: auto cleanup ecs tasks when no requests for some time
     // todo: auto cleanup fargate tasks when no requests for some time
