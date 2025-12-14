@@ -74,9 +74,6 @@ export class InfraStack extends cdk.Stack {
       },
     });
 
-    proxyContainer.addEnvironment("SERVICE_TASK", service.taskDefinitionArn);
-    serviceContainer.addEnvironment("PROXY_TASK", proxy.taskDefinitionArn);
-
     const wrapper = new Nextjs(this, "Wrapper", {
       nextjsPath: "./wrapper",
       environment: {
