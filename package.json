@@ -10,7 +10,9 @@
     "destroy": "cdk destroy --all",
     "format": "biome format --write .",
     "lint": "biome lint .",
-    "check": "biome check --write ."
+    "check": "biome check --write .",
+    "build": "docker-compose -f docker-compose.yml build",
+    "start": "docker-compose -f docker-compose.yml up --remove-orphans"
   },
   "keywords": [],
   "author": "Sepehr Laal",

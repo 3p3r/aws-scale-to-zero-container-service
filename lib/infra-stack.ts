@@ -54,7 +54,7 @@ export class InfraStack extends cdk.Stack {
       cpu: 256,
     });
 
-    const proxyContainer = proxy.addContainer("ProxyContainer", {
+    proxy.addContainer("ProxyContainer", {
       image: ecs.ContainerImage.fromAsset("lib/proxy"),
       portMappings: [{ containerPort: 9060 }],
       environment: {
@@ -66,7 +66,7 @@ export class InfraStack extends cdk.Stack {
       networkMode: ecs.NetworkMode.AWS_VPC,
     });
 
-    const serviceContainer = service.addContainer("ServiceContainer", {
+    service.addContainer("ServiceContainer", {
       image: ecs.ContainerImage.fromAsset("lib/service"),
       portMappings: [{ containerPort: 9050 }],
       environment: {

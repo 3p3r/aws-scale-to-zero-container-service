@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: service-container
     hostname: test-service.service.local
-    ports:
-      - "9050:9050"
+    expose:
+      - "9050"
     environment:
       - SERVICE_NAME=test-service
       - NAMESPACE=local
@@ -37,4 +37,3 @@ services:
 networks:
   app-network:
     driver: bridge
-
