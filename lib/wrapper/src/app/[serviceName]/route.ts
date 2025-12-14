@@ -26,10 +26,22 @@ const SERVICE_SUBNET_IDS = process.env.SERVICE_SUBNET_IDS?.split(",") || [];
 const _SECURITY_GROUP_ID = process.env.SECURITY_GROUP_ID;
 
 assert(_PROXY_CLUSTER, "Missing required environment variable: PROXY_CLUSTER");
-assert(_SERVICE_CLUSTER, "Missing required environment variable: SERVICE_CLUSTER");
-assert(_PROXY_TASK_DEFINITION, "Missing required environment variable: PROXY_TASK_DEFINITION");
-assert(_SERVICE_TASK_DEFINITION, "Missing required environment variable: SERVICE_TASK_DEFINITION");
-assert(_SECURITY_GROUP_ID, "Missing required environment variable: SECURITY_GROUP_ID");
+assert(
+  _SERVICE_CLUSTER,
+  "Missing required environment variable: SERVICE_CLUSTER",
+);
+assert(
+  _PROXY_TASK_DEFINITION,
+  "Missing required environment variable: PROXY_TASK_DEFINITION",
+);
+assert(
+  _SERVICE_TASK_DEFINITION,
+  "Missing required environment variable: SERVICE_TASK_DEFINITION",
+);
+assert(
+  _SECURITY_GROUP_ID,
+  "Missing required environment variable: SECURITY_GROUP_ID",
+);
 
 const PROXY_CLUSTER: string = _PROXY_CLUSTER;
 const SERVICE_CLUSTER: string = _SERVICE_CLUSTER;

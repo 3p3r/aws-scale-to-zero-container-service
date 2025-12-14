@@ -4,6 +4,8 @@ A scale-to-zero container service pattern in AWS using ECS, Service Discovery, a
 
 ## Architecture
 
+![Architecture Diagram](diagram.png)
+
 ### Components
 
 1. **Fargate Cluster** - Runs proxy containers that reverse proxy to service containers
