@@ -44,6 +44,23 @@ export class InfraStack extends cdk.Stack {
       },
     });
 
+    const securityGroup = new ec2.SecurityGroup(this, "TaskSecurityGroup", {
+      vpc,
+      description: "Security group for ECS tasks",
+      allowAllOutbound: true,
+    });
+
+    securityGroup.addIngressRule(
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      ec2.Port.tcp(9050),
+      "Allow service container port",
+    );
+    securityGroup.addIngressRule(
+      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      ec2.Port.tcp(9060),
+      "Allow proxy container port",
+    );
+
     const namespace = new dns.PrivateDnsNamespace(this, "Namespace", {
       name: "local",
       vpc,
@@ -69,19 +86,73 @@ export class InfraStack extends cdk.Stack {
     service.addContainer("ServiceContainer", {
       image: ecs.ContainerImage.fromAsset("lib/service"),
       portMappings: [{ containerPort: 9050 }],
+      memoryLimitMiB: 512,
       environment: {
         NAMESPACE: namespace.namespaceName,
       },
     });
 
+    const publicSubnets = vpc.publicSubnets.map((subnet) => subnet.subnetId);
+    const privateSubnets = vpc.privateSubnets.map((subnet) => subnet.subnetId);
+
     const wrapper = new Nextjs(this, "Wrapper", {
-      nextjsPath: "./wrapper",
+      nextjsPath: "./lib/wrapper",
       environment: {
         NAMESPACE: namespace.namespaceName,
         PROXY_CLUSTER: proxyCluster.clusterName,
         SERVICE_CLUSTER: serviceCluster.clusterName,
+        PROXY_TASK_DEFINITION: proxy.taskDefinitionArn,
+        SERVICE_TASK_DEFINITION: service.taskDefinitionArn,
+        PROXY_SUBNET_IDS: publicSubnets.join(","),
+        SERVICE_SUBNET_IDS: privateSubnets.join(","),
+        SECURITY_GROUP_ID: securityGroup.securityGroupId,
       },
     });
+
+    wrapper.serverFunction.lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ecs:RunTask",
+          "ecs:ListTasks",
+          "ecs:DescribeTasks",
+          "ecs:ListContainerInstances",
+        ],
+        resources: ["*"],
+      }),
+    );
+
+    wrapper.serverFunction.lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [
+          proxy.taskRole.roleArn,
+          proxy.executionRole?.roleArn || "",
+          service.taskRole.roleArn,
+          service.executionRole?.roleArn || "",
+        ].filter(Boolean),
+      }),
+    );
+
+    wrapper.serverFunction.lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+        ],
+        resources: ["*"],
+      }),
+    );
+
+    wrapper.serverFunction.lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["ec2:DescribeNetworkInterfaces"],
+        resources: ["*"],
+      }),
+    );
 
     const discovery = new NodejsFunction(this, "Discovery", {
       entry: "lib/lambdas/discovery.ts",
@@ -156,9 +227,6 @@ export class InfraStack extends cdk.Stack {
 
     taskStateChangeRule.addTarget(new targets.LambdaFunction(discovery));
     taskStateChangeRule.addTarget(new targets.LambdaFunction(autoscaler));
-
-    // todo: auto cleanup ecs tasks when no requests for some time
-    // todo: auto cleanup fargate tasks when no requests for some time
 
     new cdk.CfnOutput(this, "WrapperUrl", {
       value: wrapper.url,

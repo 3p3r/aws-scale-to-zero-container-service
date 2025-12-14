@@ -6,8 +6,8 @@
   "scripts": {
     "test": "exit 0",
     "synth": "cdk synth",
-    "deploy": "cdk deploy --all",
-    "destroy": "cdk destroy --all",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "check": "biome check --write .",

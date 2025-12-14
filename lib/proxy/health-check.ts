@@ -34,8 +34,11 @@ console.log(`Base check interval: ${baseInterval}ms, Max delay: ${maxDelay}ms`);
 
 async function performHealthCheck(): Promise<boolean> {
   try {
-    await execAsync(`curl -f -s -o /dev/null --max-time 3 ${healthCheckUrl}`);
-    return true;
+    const { stdout } = await execAsync(
+      `curl -f -s -o /dev/null -w "%{http_code}" --max-time 3 --connect-timeout 2 ${healthCheckUrl}`,
+    );
+    const httpCode = parseInt(stdout.trim(), 10);
+    return httpCode >= 200 && httpCode < 400;
   } catch (error) {
     return false;
   }

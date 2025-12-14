@@ -1,0 +1,21 @@
+{
+  "name": "wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.0.10",
+    "@aws-sdk/client-ecs": "^3.0.0",
+    "@aws-sdk/client-auto-scaling": "^3.0.0"
+  },
+  "devDependencies": {
+    "@opennextjs/aws": "^3.9.6",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
