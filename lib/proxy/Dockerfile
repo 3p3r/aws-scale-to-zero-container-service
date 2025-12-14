@@ -1,6 +1,6 @@
 FROM nginx:alpine
 
-RUN apk add --no-cache nodejs npm supervisor
+RUN apk add --no-cache nodejs npm supervisor curl
 
 WORKDIR /app
 

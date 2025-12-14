@@ -43,7 +43,7 @@ writeFileSync("/etc/nginx/conf.d/default.conf", nginxConfig);
 
 try {
   execSync("nginx -t", { stdio: "inherit" });
-} catch (error) {
+} catch {
   console.error("Nginx configuration test failed");
   process.exit(1);
 }
