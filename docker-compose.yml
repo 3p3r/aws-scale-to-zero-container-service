@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  service:
+    build:
+      context: ./lib/service
+      dockerfile: Dockerfile
+    container_name: service-container
+    hostname: test-service.service.local
+    ports:
+      - "9050:9050"
+    environment:
+      - SERVICE_NAME=test-service
+      - NAMESPACE=local
+    networks:
+      app-network:
+        aliases:
+          - test-service.service.local
+
+  proxy:
+    build:
+      context: ./lib/proxy
+      dockerfile: Dockerfile
+    container_name: proxy-container
+    ports:
+      - "9060:9060"
+    environment:
+      - SERVICE_NAME=test-service
+      - NAMESPACE=local
+      - UPSTREAM_HOST=test-service.service.local
+      - DNS_RESOLVER=127.0.0.11
+    depends_on:
+      - service
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+

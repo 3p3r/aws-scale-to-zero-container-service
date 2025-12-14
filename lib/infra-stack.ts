@@ -45,7 +45,7 @@ export class InfraStack extends cdk.Stack {
     });
 
     const namespace = new dns.PrivateDnsNamespace(this, "Namespace", {
-      name: "service.local",
+      name: "local",
       vpc,
     });
 
@@ -55,7 +55,7 @@ export class InfraStack extends cdk.Stack {
     });
 
     const proxyContainer = proxy.addContainer("ProxyContainer", {
-      image: ecs.ContainerImage.fromRegistry("nginx:latest"), // todo
+      image: ecs.ContainerImage.fromAsset("lib/proxy"),
       portMappings: [{ containerPort: 9060 }],
       environment: {
         NAMESPACE: namespace.namespaceName,
@@ -67,7 +67,7 @@ export class InfraStack extends cdk.Stack {
     });
 
     const serviceContainer = service.addContainer("ServiceContainer", {
-      image: ecs.ContainerImage.fromRegistry("amazonlinux:2"), // todo
+      image: ecs.ContainerImage.fromAsset("lib/service"),
       portMappings: [{ containerPort: 9050 }],
       environment: {
         NAMESPACE: namespace.namespaceName,
