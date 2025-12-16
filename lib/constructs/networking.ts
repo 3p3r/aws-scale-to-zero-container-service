@@ -27,7 +27,7 @@ export class Networking extends Construct {
         {
           cidrMask: 24,
           name: "Private",
-          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
         },
       ],
     });

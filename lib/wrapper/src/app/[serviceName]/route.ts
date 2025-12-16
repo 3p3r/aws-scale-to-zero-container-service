@@ -186,6 +186,34 @@ async function checkExistingTasks(serviceName: string): Promise<{
 }
 
 async function ensureEc2Capacity(): Promise<void> {
+  // First check if we already have ready ECS container instances
+  const containerInstancesResponse = await ecsClient.send(
+    new ListContainerInstancesCommand({
+      cluster: SERVICE_CLUSTER,
+    }),
+  );
+
+  if (containerInstancesResponse.containerInstanceArns?.length) {
+    const instanceDetails = await ecsClient.send(
+      new DescribeContainerInstancesCommand({
+        cluster: SERVICE_CLUSTER,
+        containerInstances:
+          containerInstancesResponse.containerInstanceArns.slice(0, 1),
+      }),
+    );
+
+    const instance = instanceDetails.containerInstances?.[0];
+    if (
+      instance &&
+      instance.status === "ACTIVE" &&
+      instance.agentConnected === true
+    ) {
+      // Container instance is ready, no need to wait
+      return;
+    }
+  }
+
+  // No ready container instances, ensure ASG has capacity and wait
   const asgResponse = await autoScalingClient.send(
     new DescribeAutoScalingGroupsCommand({
       AutoScalingGroupNames: [SERVICE_ASG_NAME],
@@ -197,8 +225,8 @@ async function ensureEc2Capacity(): Promise<void> {
     throw new Error("Auto Scaling Group not found");
   }
 
-  const currentCapacity = asg.Instances?.length || 0;
-  if (currentCapacity === 0) {
+  const desiredCapacity = asg.DesiredCapacity || 0;
+  if (desiredCapacity === 0) {
     await autoScalingClient.send(
       new SetDesiredCapacityCommand({
         AutoScalingGroupName: SERVICE_ASG_NAME,
@@ -206,56 +234,40 @@ async function ensureEc2Capacity(): Promise<void> {
         HonorCooldown: false,
       }),
     );
-
-    await waitForCapacity(SERVICE_ASG_NAME);
   }
+
+  await waitForCapacity();
 }
 
-async function waitForCapacity(
-  asgName: string,
-  maxWaitSeconds = 300,
-): Promise<void> {
+async function waitForCapacity(maxWaitSeconds = 300): Promise<void> {
   const startTime = Date.now();
   const pollInterval = 5000;
 
   while (Date.now() - startTime < maxWaitSeconds * 1000) {
-    const asgResponse = await autoScalingClient.send(
-      new DescribeAutoScalingGroupsCommand({
-        AutoScalingGroupNames: [asgName],
+    const containerInstancesResponse = await ecsClient.send(
+      new ListContainerInstancesCommand({
+        cluster: SERVICE_CLUSTER,
       }),
     );
 
-    const asg = asgResponse.AutoScalingGroups?.[0];
-    const instances = asg?.Instances || [];
-    const readyInstances = instances.filter(
-      (inst) => inst.LifecycleState === "InService",
-    );
-
-    if (readyInstances.length > 0) {
-      const containerInstancesResponse = await ecsClient.send(
-        new ListContainerInstancesCommand({
+    if (containerInstancesResponse.containerInstanceArns?.length) {
+      const instanceDetails = await ecsClient.send(
+        new DescribeContainerInstancesCommand({
           cluster: SERVICE_CLUSTER,
+          containerInstances:
+            containerInstancesResponse.containerInstanceArns.slice(0, 1),
         }),
       );
 
-      if (containerInstancesResponse.containerInstanceArns?.length) {
-        const instanceDetails = await ecsClient.send(
-          new DescribeContainerInstancesCommand({
-            cluster: SERVICE_CLUSTER,
-            containerInstances:
-              containerInstancesResponse.containerInstanceArns.slice(0, 1),
-          }),
-        );
-
-        const instance = instanceDetails.containerInstances?.[0];
-        if (
-          instance &&
-          instance.status === "ACTIVE" &&
-          instance.agentConnected === true
-        ) {
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-          return;
-        }
+      const instance = instanceDetails.containerInstances?.[0];
+      if (
+        instance &&
+        instance.status === "ACTIVE" &&
+        instance.agentConnected === true
+      ) {
+        // Give the agent a moment to fully initialize
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return;
       }
     }
 

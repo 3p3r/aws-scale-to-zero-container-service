@@ -55,6 +55,7 @@ export class InfraStack extends cdk.Stack {
           "ecs:ListTasks",
           "ecs:DescribeTasks",
           "ecs:ListContainerInstances",
+          "ecs:DescribeContainerInstances",
         ],
         resources: ["*"],
       }),
