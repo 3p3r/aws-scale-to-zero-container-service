@@ -12,6 +12,7 @@ import {
   DescribeAutoScalingGroupsCommand,
   SetDesiredCapacityCommand,
 } from "@aws-sdk/client-auto-scaling";
+import { backOff } from "exponential-backoff";
 
 // --- Config ---
 
@@ -160,33 +161,57 @@ async function launchProxyTask(serviceName: string): Promise<string> {
 }
 
 async function launchServiceTask(serviceName: string): Promise<string> {
-  const response = await ecs.send(
-    new RunTaskCommand({
-      cluster: config.serviceCluster,
-      taskDefinition: config.serviceTaskDefinition,
-      launchType: "EC2",
-      count: 1,
-      networkConfiguration: {
-        awsvpcConfiguration: {
-          subnets: config.serviceSubnetIds,
-          securityGroups: [config.securityGroupId],
-          assignPublicIp: "DISABLED",
-        },
-      },
-      overrides: {
-        containerOverrides: [
-          {
-            name: config.serviceContainerName,
-            environment: [{ name: "SERVICE_NAME", value: serviceName }],
+  return backOff(
+    async () => {
+      const response = await ecs.send(
+        new RunTaskCommand({
+          cluster: config.serviceCluster,
+          taskDefinition: config.serviceTaskDefinition,
+          launchType: "EC2",
+          count: 1,
+          networkConfiguration: {
+            awsvpcConfiguration: {
+              subnets: config.serviceSubnetIds,
+              securityGroups: [config.securityGroupId],
+              assignPublicIp: "DISABLED",
+            },
           },
-        ],
-      },
-    }),
-  );
+          overrides: {
+            containerOverrides: [
+              {
+                name: config.serviceContainerName,
+                environment: [{ name: "SERVICE_NAME", value: serviceName }],
+              },
+            ],
+          },
+        }),
+      );
 
-  const taskArn = response.tasks?.[0]?.taskArn;
-  if (!taskArn) throw new Error("Failed to launch service task");
-  return taskArn;
+      const taskArn = response.tasks?.[0]?.taskArn;
+      if (taskArn) {
+        return taskArn;
+      }
+
+      const failure = response.failures?.[0];
+      throw new Error(
+        `Failed to launch service task: ${failure?.reason ?? "unknown"}`,
+      );
+    },
+    {
+      numOfAttempts: 5,
+      startingDelay: 2_000,
+      timeMultiple: 2,
+      maxDelay: 10_000,
+      jitter: "full",
+      retry: (error) => {
+        // Retry on resource-related failures
+        const msg = error instanceof Error ? error.message : "";
+        return (
+          msg.includes("RESOURCE:") || msg.includes("No Container Instances")
+        );
+      },
+    },
+  );
 }
 
 // --- EC2 Capacity ---
@@ -241,7 +266,11 @@ async function waitForContainerInstance(): Promise<void> {
   const deadline = Date.now() + config.capacityWaitTimeout;
 
   while (Date.now() < deadline) {
-    if (await hasReadyContainerInstance()) return;
+    if (await hasReadyContainerInstance()) {
+      // Small buffer for ECS to fully register the instance's capacity
+      await new Promise((r) => setTimeout(r, 2_000));
+      return;
+    }
     await new Promise((r) => setTimeout(r, config.pollInterval));
   }
 

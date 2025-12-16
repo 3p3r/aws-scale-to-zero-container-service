@@ -35,6 +35,9 @@ export class Containers extends Construct {
       "Ec2Capacity",
       {
         instanceType: new ec2.InstanceType("t3.micro"),
+        minCapacity: 0,
+        maxCapacity: 10,
+        desiredCapacity: 0,
       },
     );
 
