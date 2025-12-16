@@ -25,12 +25,10 @@ export class Containers extends Construct {
 
     this.proxyCluster = new ecs.Cluster(this, "FargateCluster", {
       vpc: props.networking.vpc,
-      clusterName: "FargateCluster",
     });
 
     this.serviceCluster = new ecs.Cluster(this, "Ec2Cluster", {
       vpc: props.networking.vpc,
-      clusterName: "Ec2Cluster",
     });
 
     this.serviceAutoScalingGroup = this.serviceCluster.addCapacity(
