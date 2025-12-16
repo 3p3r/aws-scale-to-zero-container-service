@@ -1,6 +1,7 @@
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as dns from "aws-cdk-lib/aws-servicediscovery";
+import { Containers } from "./containers";
 
 export interface NetworkingProps {
   namespaceName?: string;
@@ -44,12 +45,12 @@ export class Networking extends Construct {
 
     this.securityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-      ec2.Port.tcp(9050),
+      ec2.Port.tcp(Containers.SERVICE_PORT),
       "Allow service container port",
     );
     this.securityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-      ec2.Port.tcp(9060),
+      ec2.Port.tcp(Containers.PROXY_PORT),
       "Allow proxy container port",
     );
   }

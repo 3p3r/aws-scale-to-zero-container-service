@@ -7,7 +7,6 @@ import {
 } from "@aws-sdk/client-ecs";
 import {
   AutoScalingClient,
-  DescribeAutoScalingGroupsCommand,
   SetDesiredCapacityCommand,
   SetInstanceProtectionCommand,
 } from "@aws-sdk/client-auto-scaling";
@@ -16,6 +15,9 @@ import type { EventBridgeEvent } from "aws-lambda";
 
 const ecsClient = new ECSClient();
 const autoScalingClient = new AutoScalingClient();
+
+const SERVICE_CLUSTER = process.env.SERVICE_CLUSTER!;
+const SERVICE_ASG_NAME = process.env.SERVICE_ASG_NAME!;
 
 const MAX_TASKS_PER_INSTANCE = 3;
 
@@ -34,42 +36,28 @@ export const handler = async (
   }
 
   const clusterName = clusterArn.split("/").pop();
-  if (!clusterName) {
+  if (clusterName !== SERVICE_CLUSTER) {
     return;
   }
 
-  await evaluateAndScale(clusterName);
+  await evaluateAndScale();
 };
 
-async function evaluateAndScale(clusterName: string): Promise<void> {
-  const tasks = await listRunningTasks(clusterName);
-  const instances = await listContainerInstances(clusterName);
-
-  const asgName = await getAutoScalingGroupName(clusterName, instances);
-  if (!asgName) {
-    return;
-  }
+async function evaluateAndScale(): Promise<void> {
+  const tasks = await listRunningTasks();
+  const instances = await listContainerInstances();
 
   if (instances.length === 0) {
     const requiredInstances = Math.ceil(tasks.length / MAX_TASKS_PER_INSTANCE);
     if (requiredInstances > 0) {
-      await setAutoScalingGroupCapacity(asgName, requiredInstances);
+      await setAutoScalingGroupCapacity(requiredInstances);
     }
     return;
   }
 
-  const instanceTaskCounts = await getInstanceTaskCounts(
-    clusterName,
-    instances,
-    tasks,
-  );
+  const instanceTaskCounts = await getInstanceTaskCounts(instances, tasks);
 
-  await updateInstanceProtection(
-    clusterName,
-    instances,
-    instanceTaskCounts,
-    asgName,
-  );
+  await updateInstanceProtection(instances, instanceTaskCounts);
 
   const totalTasks = tasks.length;
   const totalInstances = instances.length;
@@ -84,18 +72,18 @@ async function evaluateAndScale(clusterName: string): Promise<void> {
   );
 
   if (desiredCapacity !== totalInstances) {
-    await setAutoScalingGroupCapacity(asgName, desiredCapacity);
+    await setAutoScalingGroupCapacity(desiredCapacity);
   }
 }
 
-async function listRunningTasks(clusterName: string): Promise<string[]> {
+async function listRunningTasks(): Promise<string[]> {
   const tasks: string[] = [];
   let nextToken: string | undefined;
 
   do {
     const response = await ecsClient.send(
       new ListTasksCommand({
-        cluster: clusterName,
+        cluster: SERVICE_CLUSTER,
         desiredStatus: "RUNNING",
         nextToken,
       }),
@@ -111,14 +99,14 @@ async function listRunningTasks(clusterName: string): Promise<string[]> {
   return tasks;
 }
 
-async function listContainerInstances(clusterName: string): Promise<string[]> {
+async function listContainerInstances(): Promise<string[]> {
   const instances: string[] = [];
   let nextToken: string | undefined;
 
   do {
     const response = await ecsClient.send(
       new ListContainerInstancesCommand({
-        cluster: clusterName,
+        cluster: SERVICE_CLUSTER,
         nextToken,
       }),
     );
@@ -134,7 +122,6 @@ async function listContainerInstances(clusterName: string): Promise<string[]> {
 }
 
 async function getInstanceTaskCounts(
-  clusterName: string,
   instanceArns: string[],
   taskArns: string[],
 ): Promise<Map<string, number>> {
@@ -153,7 +140,7 @@ async function getInstanceTaskCounts(
     const batch = taskArns.slice(i, i + tasksPerBatch);
     const response = await ecsClient.send(
       new DescribeTasksCommand({
-        cluster: clusterName,
+        cluster: SERVICE_CLUSTER,
         tasks: batch,
       }),
     );
@@ -171,14 +158,12 @@ async function getInstanceTaskCounts(
 }
 
 async function updateInstanceProtection(
-  clusterName: string,
   instanceArns: string[],
   instanceTaskCounts: Map<string, number>,
-  asgName: string,
 ): Promise<void> {
   const instanceDetails = await ecsClient.send(
     new DescribeContainerInstancesCommand({
-      cluster: clusterName,
+      cluster: SERVICE_CLUSTER,
       containerInstances: instanceArns,
     }),
   );
@@ -207,7 +192,7 @@ async function updateInstanceProtection(
   if (instancesToProtect.length > 0) {
     await autoScalingClient.send(
       new SetInstanceProtectionCommand({
-        AutoScalingGroupName: asgName,
+        AutoScalingGroupName: SERVICE_ASG_NAME,
         InstanceIds: instancesToProtect,
         ProtectedFromScaleIn: true,
       }),
@@ -217,58 +202,12 @@ async function updateInstanceProtection(
   if (instancesToUnprotect.length > 0) {
     await autoScalingClient.send(
       new SetInstanceProtectionCommand({
-        AutoScalingGroupName: asgName,
+        AutoScalingGroupName: SERVICE_ASG_NAME,
         InstanceIds: instancesToUnprotect,
         ProtectedFromScaleIn: false,
       }),
     );
   }
-}
-
-async function getAutoScalingGroupName(
-  clusterName: string,
-  instanceArns: string[],
-): Promise<string | null> {
-  if (instanceArns.length === 0) {
-    const response = await autoScalingClient.send(
-      new DescribeAutoScalingGroupsCommand({}),
-    );
-
-    for (const asg of response.AutoScalingGroups || []) {
-      const tags = asg.Tags || [];
-      const clusterTag = tags.find(
-        (tag) => tag.Key === "ECSCluster" && tag.Value === clusterName,
-      );
-      if (clusterTag) {
-        return asg.AutoScalingGroupName || null;
-      }
-    }
-    return null;
-  }
-
-  const instanceDetails = await ecsClient.send(
-    new DescribeContainerInstancesCommand({
-      cluster: clusterName,
-      containerInstances: [instanceArns[0]],
-    }),
-  );
-
-  const ec2InstanceId = instanceDetails.containerInstances?.[0]?.ec2InstanceId;
-  if (!ec2InstanceId) {
-    return null;
-  }
-
-  const response = await autoScalingClient.send(
-    new DescribeAutoScalingGroupsCommand({}),
-  );
-
-  for (const asg of response.AutoScalingGroups || []) {
-    if (asg.Instances?.some((inst) => inst.InstanceId === ec2InstanceId)) {
-      return asg.AutoScalingGroupName || null;
-    }
-  }
-
-  return null;
 }
 
 function calculateDesiredCapacity(
@@ -297,12 +236,11 @@ function calculateDesiredCapacity(
 }
 
 async function setAutoScalingGroupCapacity(
-  asgName: string,
   desiredCapacity: number,
 ): Promise<void> {
   await autoScalingClient.send(
     new SetDesiredCapacityCommand({
-      AutoScalingGroupName: asgName,
+      AutoScalingGroupName: SERVICE_ASG_NAME,
       DesiredCapacity: desiredCapacity,
       HonorCooldown: false,
     }),

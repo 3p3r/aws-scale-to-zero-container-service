@@ -24,6 +24,9 @@ const _SERVICE_TASK_DEFINITION = process.env.SERVICE_TASK_DEFINITION;
 const PROXY_SUBNET_IDS = process.env.PROXY_SUBNET_IDS?.split(",") || [];
 const SERVICE_SUBNET_IDS = process.env.SERVICE_SUBNET_IDS?.split(",") || [];
 const _SECURITY_GROUP_ID = process.env.SECURITY_GROUP_ID;
+const _SERVICE_ASG_NAME = process.env.SERVICE_ASG_NAME;
+const _PROXY_CONTAINER_NAME = process.env.PROXY_CONTAINER_NAME;
+const _SERVICE_CONTAINER_NAME = process.env.SERVICE_CONTAINER_NAME;
 
 assert(_PROXY_CLUSTER, "Missing required environment variable: PROXY_CLUSTER");
 assert(
@@ -42,12 +45,27 @@ assert(
   _SECURITY_GROUP_ID,
   "Missing required environment variable: SECURITY_GROUP_ID",
 );
+assert(
+  _SERVICE_ASG_NAME,
+  "Missing required environment variable: SERVICE_ASG_NAME",
+);
+assert(
+  _PROXY_CONTAINER_NAME,
+  "Missing required environment variable: PROXY_CONTAINER_NAME",
+);
+assert(
+  _SERVICE_CONTAINER_NAME,
+  "Missing required environment variable: SERVICE_CONTAINER_NAME",
+);
 
 const PROXY_CLUSTER: string = _PROXY_CLUSTER;
 const SERVICE_CLUSTER: string = _SERVICE_CLUSTER;
 const PROXY_TASK_DEFINITION: string = _PROXY_TASK_DEFINITION;
 const SERVICE_TASK_DEFINITION: string = _SERVICE_TASK_DEFINITION;
 const SECURITY_GROUP_ID: string = _SECURITY_GROUP_ID;
+const SERVICE_ASG_NAME: string = _SERVICE_ASG_NAME;
+const PROXY_CONTAINER_NAME: string = _PROXY_CONTAINER_NAME;
+const SERVICE_CONTAINER_NAME: string = _SERVICE_CONTAINER_NAME;
 
 if (PROXY_SUBNET_IDS.length === 0 || SERVICE_SUBNET_IDS.length === 0) {
   throw new Error(
@@ -168,14 +186,9 @@ async function checkExistingTasks(serviceName: string): Promise<{
 }
 
 async function ensureEc2Capacity(): Promise<void> {
-  const asgName = await getAutoScalingGroupName();
-  if (!asgName) {
-    throw new Error("Could not find Auto Scaling Group for EC2 cluster");
-  }
-
   const asgResponse = await autoScalingClient.send(
     new DescribeAutoScalingGroupsCommand({
-      AutoScalingGroupNames: [asgName],
+      AutoScalingGroupNames: [SERVICE_ASG_NAME],
     }),
   );
 
@@ -188,13 +201,13 @@ async function ensureEc2Capacity(): Promise<void> {
   if (currentCapacity === 0) {
     await autoScalingClient.send(
       new SetDesiredCapacityCommand({
-        AutoScalingGroupName: asgName,
+        AutoScalingGroupName: SERVICE_ASG_NAME,
         DesiredCapacity: 1,
         HonorCooldown: false,
       }),
     );
 
-    await waitForCapacity(asgName);
+    await waitForCapacity(SERVICE_ASG_NAME);
   }
 }
 
@@ -252,24 +265,6 @@ async function waitForCapacity(
   throw new Error("Timeout waiting for EC2 capacity");
 }
 
-async function getAutoScalingGroupName(): Promise<string | null> {
-  const response = await autoScalingClient.send(
-    new DescribeAutoScalingGroupsCommand({}),
-  );
-
-  for (const asg of response.AutoScalingGroups || []) {
-    const tags = asg.Tags || [];
-    const clusterTag = tags.find(
-      (tag) => tag.Key === "ECSCluster" && tag.Value === SERVICE_CLUSTER,
-    );
-    if (clusterTag) {
-      return asg.AutoScalingGroupName || null;
-    }
-  }
-
-  return null;
-}
-
 async function launchProxyTask(serviceName: string) {
   const response = await ecsClient.send(
     new RunTaskCommand({
@@ -286,7 +281,7 @@ async function launchProxyTask(serviceName: string) {
       overrides: {
         containerOverrides: [
           {
-            name: "ProxyContainer",
+            name: PROXY_CONTAINER_NAME,
             environment: [
               {
                 name: "SERVICE_NAME",
@@ -322,7 +317,7 @@ async function launchServiceTask(serviceName: string) {
       overrides: {
         containerOverrides: [
           {
-            name: "ServiceContainer",
+            name: SERVICE_CONTAINER_NAME,
             environment: [
               {
                 name: "SERVICE_NAME",

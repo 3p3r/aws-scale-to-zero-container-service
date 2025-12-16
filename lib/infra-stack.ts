@@ -40,6 +40,10 @@ export class InfraStack extends cdk.Stack {
         PROXY_SUBNET_IDS: publicSubnets.join(","),
         SERVICE_SUBNET_IDS: privateSubnets.join(","),
         SECURITY_GROUP_ID: networking.securityGroup.securityGroupId,
+        SERVICE_ASG_NAME:
+          containers.serviceAutoScalingGroup.autoScalingGroupName,
+        PROXY_CONTAINER_NAME: Containers.PROXY_CONTAINER_NAME,
+        SERVICE_CONTAINER_NAME: Containers.SERVICE_CONTAINER_NAME,
       },
     });
 

@@ -11,6 +11,9 @@ import type { EventBridgeEvent } from "aws-lambda";
 
 const serviceDiscoveryClient = new ServiceDiscoveryClient();
 
+const PROXY_PORT = parseInt(process.env.PROXY_PORT || "9060", 10);
+const SERVICE_PORT = parseInt(process.env.SERVICE_PORT || "9050", 10);
+
 export const handler = async (
   event: EventBridgeEvent<"ECS Task State Change", Task>,
 ): Promise<void> => {
@@ -132,7 +135,7 @@ function extractNetworkingInfo(
     return null;
   }
 
-  const port = launchType === "FARGATE" ? 9060 : 9050;
+  const port = launchType === "FARGATE" ? PROXY_PORT : SERVICE_PORT;
   return { ipAddress, port };
 }
 

@@ -27,6 +27,8 @@ export class Automation extends Construct {
       environment: {
         NAMESPACE_ID: props.networking.namespace.namespaceId,
         ALLOWED_CLUSTER_ARNS: `${props.containers.proxyCluster.clusterArn},${props.containers.serviceCluster.clusterArn}`,
+        PROXY_PORT: Containers.PROXY_PORT.toString(),
+        SERVICE_PORT: Containers.SERVICE_PORT.toString(),
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
@@ -49,6 +51,11 @@ export class Automation extends Construct {
     this.autoscaler = new NodejsFunction(this, "Autoscaler", {
       entry: "lib/lambdas/autoscaler.ts",
       runtime: lambda.Runtime.NODEJS_LATEST,
+      environment: {
+        SERVICE_CLUSTER: props.containers.serviceCluster.clusterName,
+        SERVICE_ASG_NAME:
+          props.containers.serviceAutoScalingGroup.autoScalingGroupName,
+      },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
     });
