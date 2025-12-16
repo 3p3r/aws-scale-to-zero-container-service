@@ -44,7 +44,7 @@ export const handler = async (
 };
 
 async function evaluateAndScale(): Promise<void> {
-  const tasks = await listRunningTasks();
+  const tasks = await listActiveTasks();
   const instances = await listContainerInstances();
 
   if (instances.length === 0) {
@@ -76,7 +76,18 @@ async function evaluateAndScale(): Promise<void> {
   }
 }
 
-async function listRunningTasks(): Promise<string[]> {
+async function listActiveTasks(): Promise<string[]> {
+  // List both RUNNING and PENDING to avoid scaling down while tasks are starting
+  const [running, pending] = await Promise.all([
+    listTasksByStatus("RUNNING"),
+    listTasksByStatus("PENDING"),
+  ]);
+  return [...running, ...pending];
+}
+
+async function listTasksByStatus(
+  desiredStatus: "RUNNING" | "PENDING",
+): Promise<string[]> {
   const tasks: string[] = [];
   let nextToken: string | undefined;
 
@@ -84,7 +95,7 @@ async function listRunningTasks(): Promise<string[]> {
     const response = await ecsClient.send(
       new ListTasksCommand({
         cluster: SERVICE_CLUSTER,
-        desiredStatus: "RUNNING",
+        desiredStatus,
         nextToken,
       }),
     );

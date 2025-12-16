@@ -8,9 +8,9 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "16.0.10",
+    "@aws-sdk/client-auto-scaling": "^3.0.0",
     "@aws-sdk/client-ecs": "^3.0.0",
-    "@aws-sdk/client-auto-scaling": "^3.0.0"
+    "next": "16.0.10"
   },
   "devDependencies": {
     "@opennextjs/aws": "^3.9.6",

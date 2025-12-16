@@ -32,6 +32,9 @@ export class Automation extends Construct {
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
+      bundling: {
+        externalModules: ["@aws-sdk/*"],
+      },
     });
 
     this.discovery.addToRolePolicy(
@@ -58,6 +61,9 @@ export class Automation extends Construct {
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
+      bundling: {
+        externalModules: ["@aws-sdk/*"],
+      },
     });
 
     this.autoscaler.addToRolePolicy(
