@@ -4,6 +4,10 @@
   "description": "Scale-To-Zero Container Service pattern in AWS.",
   "main": "index.js",
   "scripts": {
+    "install:proxy": "npm install --prefix lib/proxy",
+    "install:service": "npm install --prefix lib/service",
+    "install:wrapper": "npm install --prefix lib/wrapper",
+    "install": "npm-run-all --parallel install:*",
     "test": "exit 0",
     "synth": "cdk synth",
     "deploy": "cdk deploy",
@@ -30,6 +34,7 @@
     "@types/node": "^25.0.0",
     "aws-cdk": "^2.1034.0",
     "cdk-nextjs-standalone": "^4.3.3",
+    "npm-run-all": "^4.1.5",
     "tsx": "^4.21.0"
   }
 }

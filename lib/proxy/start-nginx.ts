@@ -8,7 +8,8 @@ if (!serviceName) {
 
 const upstreamHost =
   process.env.UPSTREAM_HOST || `${serviceName}.service.local`;
-const upstreamPort = 9050;
+const upstreamPort = process.env.UPSTREAM_PORT || "9050";
+const proxyPort = process.env.PROXY_PORT || "9060";
 
 const resolver = process.env.DNS_RESOLVER || "169.254.169.253";
 
@@ -17,7 +18,7 @@ resolver ${resolver} valid=10s;
 resolver_timeout 5s;
 
 server {
-    listen 9060;
+    listen ${proxyPort};
     server_name _;
 
     set $backend "${upstreamHost}:${upstreamPort}";

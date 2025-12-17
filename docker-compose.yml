@@ -12,6 +12,8 @@ services:
     environment:
       - SERVICE_NAME=test-service
       - NAMESPACE=local
+      - PROXY_HOST=test-service.proxy.local
+      - PROXY_PORT=9060
     networks:
       app-network:
         aliases:
@@ -22,17 +24,23 @@ services:
       context: ./lib/proxy
       dockerfile: Dockerfile
     container_name: proxy-container
+    hostname: test-service.proxy.local
     ports:
       - "9060:9060"
+    expose:
+      - "9060"
     environment:
       - SERVICE_NAME=test-service
       - NAMESPACE=local
       - UPSTREAM_HOST=test-service.service.local
+      - UPSTREAM_PORT=9050
       - DNS_RESOLVER=127.0.0.11
     depends_on:
       - service
     networks:
-      - app-network
+      app-network:
+        aliases:
+          - test-service.proxy.local
 
 networks:
   app-network:

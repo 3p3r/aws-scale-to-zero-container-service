@@ -53,7 +53,6 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ serviceName: string }> },
 ) {
-  const startTime = Date.now();
   const { serviceName } = await params;
 
   try {
@@ -64,16 +63,31 @@ export async function GET(
     ]);
 
     if (proxyTask && serviceTask) {
-      const elapsedMs = Date.now() - startTime;
       return NextResponse.json({
-        message: `Service ${serviceName} already running (processed in ${elapsedMs}ms)`,
+        message: `Service ${serviceName} already running`,
         proxyTask,
         serviceTask,
       });
     }
 
     // Launch missing tasks
-    const proxy = proxyTask ?? (await launchProxyTask(serviceName));
+    let proxy = proxyTask;
+    if (!proxy) {
+      // Double-check for existing task before launching (prevent race conditions)
+      const existingProxyTask = await findTask(
+        config.proxyCluster,
+        serviceName,
+        "FARGATE",
+      );
+      if (existingProxyTask) {
+        console.log(
+          `[${serviceName}] Proxy task already exists (race condition detected): ${existingProxyTask}`,
+        );
+        proxy = existingProxyTask;
+      } else {
+        proxy = await launchProxyTask(serviceName);
+      }
+    }
 
     let service = serviceTask;
     if (!service) {
@@ -81,24 +95,36 @@ export async function GET(
         `[${serviceName}] Ensuring EC2 capacity before launching service task`,
       );
       await ensureEc2Capacity();
-      console.log(
-        `[${serviceName}] EC2 capacity ensured, launching service task`,
+
+      // Double-check for existing task before launching (prevent race conditions)
+      const existingServiceTask = await findTask(
+        config.serviceCluster,
+        serviceName,
+        "EC2",
       );
-      service = await launchServiceTask(serviceName);
+      if (existingServiceTask) {
+        console.log(
+          `[${serviceName}] Service task already exists (race condition detected): ${existingServiceTask}`,
+        );
+        service = existingServiceTask;
+      } else {
+        console.log(
+          `[${serviceName}] EC2 capacity ensured, launching service task`,
+        );
+        service = await launchServiceTask(serviceName);
+      }
     }
 
-    const elapsedMs = Date.now() - startTime;
     return NextResponse.json({
-      message: `Service ${serviceName} launched (processed in ${elapsedMs}ms)`,
+      message: `Service ${serviceName} launched`,
       proxyTask: proxy,
       serviceTask: service,
     });
   } catch (error) {
-    const elapsedMs = Date.now() - startTime;
     console.error("Error:", error);
     return NextResponse.json(
       {
-        error: `${error instanceof Error ? error.message : "Unknown error"} (processed in ${elapsedMs}ms)`,
+        error: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },
     );
@@ -186,6 +212,19 @@ async function launchServiceTask(serviceName: string): Promise<string> {
       // Check if we've exceeded 5 minutes
       if (Date.now() - startTime > maxDuration) {
         throw new Error("Timeout: Exceeded 5 minute retry limit");
+      }
+
+      // Check for existing task before each attempt (prevent duplicates from concurrent requests)
+      const existingTask = await findTask(
+        config.serviceCluster,
+        serviceName,
+        "EC2",
+      );
+      if (existingTask) {
+        console.log(
+          `[${serviceName}] Found existing service task during retry: ${existingTask}`,
+        );
+        return existingTask;
       }
 
       console.log(

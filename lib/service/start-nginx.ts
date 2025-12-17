@@ -1,9 +1,11 @@
 import { writeFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 
+const servicePort = process.env.SERVICE_PORT || "9050";
+
 const nginxConfig = `
 server {
-    listen 9050;
+    listen ${servicePort};
     server_name _;
 
     root /usr/share/nginx/html;

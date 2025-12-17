@@ -10,19 +10,18 @@ if (!serviceName) {
   throw new Error("SERVICE_NAME environment variable is required");
 }
 
-const upstreamHost =
-  process.env.UPSTREAM_HOST || `${serviceName}.service.local`;
-const upstreamPort = process.env.UPSTREAM_PORT || "9050";
-const healthCheckUrl = `http://${upstreamHost}:${upstreamPort}`;
+const proxyHost = process.env.PROXY_HOST || `${serviceName}.proxy.local`;
+const proxyPort = process.env.PROXY_PORT || "9060";
+const healthCheckUrl = `http://${proxyHost}:${proxyPort}`;
 const maxFailures = parseInt(process.env.MAX_HEALTH_CHECK_FAILURES || "5", 10);
 const baseInterval = parseInt(
   process.env.HEALTH_CHECK_BASE_INTERVAL || "5000",
   10,
 );
 const initialGracePeriod = parseInt(
-  process.env.HEALTH_CHECK_INITIAL_GRACE_PERIOD_MS || "180000",
+  process.env.HEALTH_CHECK_INITIAL_GRACE_PERIOD_MS || "60000",
   10,
-); // 3 minutes default
+); // 1 minute default (proxy usually starts faster)
 const maxDelay = parseInt(process.env.HEALTH_CHECK_MAX_DELAY_MS || "30000", 10);
 const SUPERVISOR_PID_FILE = "/var/run/supervisord.pid";
 
@@ -55,7 +54,7 @@ async function shutdown() {
   isShuttingDown = true;
 
   console.error(
-    `Health check failed ${maxFailures} times consecutively. Shutting down proxy container...`,
+    `Health check failed ${maxFailures} times consecutively. Shutting down service container...`,
   );
   try {
     if (existsSync(SUPERVISOR_PID_FILE)) {
@@ -117,7 +116,7 @@ async function runHealthCheckWithBackoff(): Promise<boolean> {
 
 async function startHealthChecks() {
   // Wait for initial grace period before starting health checks
-  // This gives time for the service to launch and register with service discovery
+  // This gives time for the proxy to launch and register with service discovery
   console.log(
     `Waiting ${initialGracePeriod}ms grace period before starting health checks...`,
   );
