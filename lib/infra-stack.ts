@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib/core";
 import { Construct } from "constructs";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 import { Nextjs } from "cdk-nextjs-standalone";
 import { Networking } from "./constructs/networking";
 import { Containers } from "./constructs/containers";
@@ -44,8 +45,15 @@ export class InfraStack extends cdk.Stack {
           containers.serviceAutoScalingGroup.autoScalingGroupName,
         PROXY_CONTAINER_NAME: Containers.PROXY_CONTAINER_NAME,
         SERVICE_CONTAINER_NAME: Containers.SERVICE_CONTAINER_NAME,
+        MAX_TASKS_PER_INSTANCE: "3",
+        SCALE_UP_WAIT_TIME_MS: "10000",
       },
     });
+
+    // Set timeout to 6 minutes to accommodate 5-minute retry window
+    const cfnFunction = wrapper.serverFunction.lambdaFunction.node
+      .defaultChild as lambda.CfnFunction;
+    cfnFunction.timeout = 360; // 6 minutes in seconds
 
     wrapper.serverFunction.lambdaFunction.addToRolePolicy(
       new iam.PolicyStatement({

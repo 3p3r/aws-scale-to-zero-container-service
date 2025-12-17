@@ -58,6 +58,7 @@ export class Automation extends Construct {
         SERVICE_CLUSTER: props.containers.serviceCluster.clusterName,
         SERVICE_ASG_NAME:
           props.containers.serviceAutoScalingGroup.autoScalingGroupName,
+        MAX_TASKS_PER_INSTANCE: "3",
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
@@ -107,5 +108,12 @@ export class Automation extends Construct {
     this.taskStateChangeRule.addTarget(
       new targets.LambdaFunction(this.autoscaler),
     );
+
+    // Scheduled rule to periodically check and scale down (backup)
+    const scheduledRule = new events.Rule(this, "AutoscalerScheduledRule", {
+      schedule: events.Schedule.rate(cdk.Duration.hours(6)),
+    });
+
+    scheduledRule.addTarget(new targets.LambdaFunction(this.autoscaler));
   }
 }

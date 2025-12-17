@@ -40,6 +40,8 @@ const config = {
   serviceSubnetIds: requireEnv("SERVICE_SUBNET_IDS").split(","),
   pollInterval: envInt("POLL_INTERVAL_MS", 2_000),
   capacityWaitTimeout: envInt("CAPACITY_WAIT_TIMEOUT_MS", 300_000),
+  maxTasksPerInstance: envInt("MAX_TASKS_PER_INSTANCE", 3),
+  scaleUpWaitTime: envInt("SCALE_UP_WAIT_TIME_MS", 10_000),
 };
 
 const ecs = new ECSClient();
@@ -51,6 +53,7 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ serviceName: string }> },
 ) {
+  const startTime = Date.now();
   const { serviceName } = await params;
 
   try {
@@ -61,8 +64,9 @@ export async function GET(
     ]);
 
     if (proxyTask && serviceTask) {
+      const elapsedMs = Date.now() - startTime;
       return NextResponse.json({
-        message: `Service ${serviceName} already running`,
+        message: `Service ${serviceName} already running (processed in ${elapsedMs}ms)`,
         proxyTask,
         serviceTask,
       });
@@ -73,19 +77,29 @@ export async function GET(
 
     let service = serviceTask;
     if (!service) {
+      console.log(
+        `[${serviceName}] Ensuring EC2 capacity before launching service task`,
+      );
       await ensureEc2Capacity();
+      console.log(
+        `[${serviceName}] EC2 capacity ensured, launching service task`,
+      );
       service = await launchServiceTask(serviceName);
     }
 
+    const elapsedMs = Date.now() - startTime;
     return NextResponse.json({
-      message: `Service ${serviceName} launched`,
+      message: `Service ${serviceName} launched (processed in ${elapsedMs}ms)`,
       proxyTask: proxy,
       serviceTask: service,
     });
   } catch (error) {
+    const elapsedMs = Date.now() - startTime;
     console.error("Error:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
+      {
+        error: `${error instanceof Error ? error.message : "Unknown error"} (processed in ${elapsedMs}ms)`,
+      },
       { status: 500 },
     );
   }
@@ -161,8 +175,23 @@ async function launchProxyTask(serviceName: string): Promise<string> {
 }
 
 async function launchServiceTask(serviceName: string): Promise<string> {
+  const startTime = Date.now();
+  const maxDuration = 5 * 60 * 1000; // 5 minutes
+  let attemptCount = 0;
+  let hasScaledUp = false;
+
   return backOff(
     async () => {
+      attemptCount++;
+      // Check if we've exceeded 5 minutes
+      if (Date.now() - startTime > maxDuration) {
+        throw new Error("Timeout: Exceeded 5 minute retry limit");
+      }
+
+      console.log(
+        `[${serviceName}] Attempting to launch EC2 service task (attempt ${attemptCount})`,
+      );
+
       const response = await ecs.send(
         new RunTaskCommand({
           cluster: config.serviceCluster,
@@ -189,36 +218,102 @@ async function launchServiceTask(serviceName: string): Promise<string> {
 
       const taskArn = response.tasks?.[0]?.taskArn;
       if (taskArn) {
+        console.log(
+          `[${serviceName}] Successfully launched EC2 service task: ${taskArn}`,
+        );
         return taskArn;
       }
 
       const failure = response.failures?.[0];
-      throw new Error(
-        `Failed to launch service task: ${failure?.reason ?? "unknown"}`,
-      );
+      const reason = failure?.reason ?? "unknown";
+
+      // If we get a resource error (CPU/MEMORY), scale up and wait
+      if (
+        reason.startsWith("RESOURCE:") &&
+        !hasScaledUp &&
+        attemptCount < 10 // Only scale up in first 10 attempts
+      ) {
+        console.log(
+          `[${serviceName}] Resource constraint detected (${reason}), scaling up ASG`,
+        );
+        hasScaledUp = true;
+        await scaleUpForResource();
+        // Wait for new instance to be ready
+        await new Promise((r) => setTimeout(r, config.scaleUpWaitTime));
+      }
+
+      const errorMessage = `Failed to launch service task: ${reason} (arn: ${failure?.arn ?? "N/A"})`;
+      console.error(`[${serviceName}] ${errorMessage}`);
+      throw new Error(errorMessage);
     },
     {
-      numOfAttempts: 5,
+      numOfAttempts: 100, // High number, but we'll stop after 5 minutes
       startingDelay: 2_000,
       timeMultiple: 2,
-      maxDelay: 10_000,
+      maxDelay: 30_000, // Max 30 seconds between retries
       jitter: "full",
       retry: (error) => {
-        // Retry on resource-related failures
+        // Always retry unless we've exceeded time limit
         const msg = error instanceof Error ? error.message : "";
-        return (
-          msg.includes("RESOURCE:") || msg.includes("No Container Instances")
-        );
+        if (msg.includes("Timeout: Exceeded 5 minute retry limit")) {
+          return false;
+        }
+        console.log(`[${serviceName}] Retrying after error: ${msg}`);
+        return true;
       },
     },
+  );
+}
+
+async function scaleUpForResource(): Promise<void> {
+  const asg = await getAsg();
+  const currentCapacity = asg.DesiredCapacity ?? 0;
+  const newCapacity = currentCapacity + 1;
+
+  console.log(
+    `Scaling up ASG from ${currentCapacity} to ${newCapacity} instances`,
+  );
+
+  await autoscaling.send(
+    new SetDesiredCapacityCommand({
+      AutoScalingGroupName: config.serviceAsgName,
+      DesiredCapacity: newCapacity,
+      HonorCooldown: false,
+    }),
   );
 }
 
 // --- EC2 Capacity ---
 
 async function ensureEc2Capacity(): Promise<void> {
-  if (await hasReadyContainerInstance()) return;
+  // Check if we have a ready instance
+  if (await hasReadyContainerInstance()) {
+    // Check if we need to scale up based on current task count
+    const currentTasks = await getCurrentTaskCount();
+    const instances = await getContainerInstanceCount();
+    const requiredInstances = Math.ceil(
+      (currentTasks + 1) / config.maxTasksPerInstance,
+    );
 
+    if (requiredInstances > instances) {
+      console.log(
+        `Scaling up: ${currentTasks} tasks, ${instances} instances, need ${requiredInstances} instances`,
+      );
+      const asg = await getAsg();
+      await autoscaling.send(
+        new SetDesiredCapacityCommand({
+          AutoScalingGroupName: config.serviceAsgName,
+          DesiredCapacity: requiredInstances,
+          HonorCooldown: false,
+        }),
+      );
+      // Wait a bit for new instances to start
+      await new Promise((r) => setTimeout(r, config.scaleUpWaitTime));
+    }
+    return;
+  }
+
+  // No instances, scale up
   const asg = await getAsg();
   if ((asg.DesiredCapacity ?? 0) === 0) {
     await autoscaling.send(
@@ -231,6 +326,42 @@ async function ensureEc2Capacity(): Promise<void> {
   }
 
   await waitForContainerInstance();
+}
+
+async function getCurrentTaskCount(): Promise<number> {
+  const [running, pending] = await Promise.all([
+    ecs.send(
+      new ListTasksCommand({
+        cluster: config.serviceCluster,
+        desiredStatus: "RUNNING",
+      }),
+    ),
+    ecs.send(
+      new ListTasksCommand({
+        cluster: config.serviceCluster,
+        desiredStatus: "PENDING",
+      }),
+    ),
+  ]);
+  return (running.taskArns?.length ?? 0) + (pending.taskArns?.length ?? 0);
+}
+
+async function getContainerInstanceCount(): Promise<number> {
+  const list = await ecs.send(
+    new ListContainerInstancesCommand({ cluster: config.serviceCluster }),
+  );
+  if (!list.containerInstanceArns?.length) return 0;
+
+  const details = await ecs.send(
+    new DescribeContainerInstancesCommand({
+      cluster: config.serviceCluster,
+      containerInstances: list.containerInstanceArns,
+    }),
+  );
+
+  return (details.containerInstances ?? []).filter(
+    (i) => i.status === "ACTIVE" && i.agentConnected === true,
+  ).length;
 }
 
 async function hasReadyContainerInstance(): Promise<boolean> {
@@ -267,8 +398,6 @@ async function waitForContainerInstance(): Promise<void> {
 
   while (Date.now() < deadline) {
     if (await hasReadyContainerInstance()) {
-      // Small buffer for ECS to fully register the instance's capacity
-      await new Promise((r) => setTimeout(r, 2_000));
       return;
     }
     await new Promise((r) => setTimeout(r, config.pollInterval));

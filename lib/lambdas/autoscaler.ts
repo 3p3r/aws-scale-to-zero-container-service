@@ -19,12 +19,28 @@ const autoScalingClient = new AutoScalingClient();
 const SERVICE_CLUSTER = process.env.SERVICE_CLUSTER!;
 const SERVICE_ASG_NAME = process.env.SERVICE_ASG_NAME!;
 
-const MAX_TASKS_PER_INSTANCE = 3;
+const MAX_TASKS_PER_INSTANCE = parseInt(
+  process.env.MAX_TASKS_PER_INSTANCE || "3",
+  10,
+);
 
 export const handler = async (
-  event: EventBridgeEvent<"ECS Task State Change", Task>,
+  event:
+    | EventBridgeEvent<"ECS Task State Change", Task>
+    | { source?: string; detail?: unknown }
+    | null
+    | undefined
+    | Record<string, unknown>,
 ): Promise<void> => {
-  const { detail } = event;
+  // Handle manual invocations, scheduled events, or events without detail
+  if (!event || !("detail" in event) || !event.detail) {
+    console.log("Manual or scheduled autoscaler check");
+    await evaluateAndScale();
+    return;
+  }
+
+  // Handle task state change events
+  const { detail } = event as EventBridgeEvent<"ECS Task State Change", Task>;
   const { clusterArn, launchType, lastStatus } = detail;
 
   if (!clusterArn || !launchType || !lastStatus) {
@@ -40,6 +56,11 @@ export const handler = async (
     return;
   }
 
+  console.log("Task state change triggered autoscaler", {
+    lastStatus,
+    clusterName,
+  });
+
   await evaluateAndScale();
 };
 
@@ -47,8 +68,14 @@ async function evaluateAndScale(): Promise<void> {
   const tasks = await listActiveTasks();
   const instances = await listContainerInstances();
 
+  console.log("Autoscaler evaluation", {
+    taskCount: tasks.length,
+    instanceCount: instances.length,
+  });
+
   if (instances.length === 0) {
     const requiredInstances = Math.ceil(tasks.length / MAX_TASKS_PER_INSTANCE);
+    console.log("No instances, calculating required", { requiredInstances });
     if (requiredInstances > 0) {
       await setAutoScalingGroupCapacity(requiredInstances);
     }
@@ -71,8 +98,18 @@ async function evaluateAndScale(): Promise<void> {
     emptyInstances,
   );
 
+  console.log("Scale decision", {
+    totalTasks,
+    totalInstances,
+    emptyInstances,
+    desiredCapacity,
+  });
+
   if (desiredCapacity !== totalInstances) {
+    console.log("Scaling ASG", { from: totalInstances, to: desiredCapacity });
     await setAutoScalingGroupCapacity(desiredCapacity);
+  } else {
+    console.log("No scaling needed - capacity matches desired");
   }
 }
 

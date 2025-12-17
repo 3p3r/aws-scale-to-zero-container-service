@@ -1,4 +1,5 @@
 import { Construct } from "constructs";
+import * as cdk from "aws-cdk-lib/core";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as autoscaling from "aws-cdk-lib/aws-autoscaling";
@@ -56,6 +57,16 @@ export class Containers extends Construct {
       environment: {
         NAMESPACE: props.networking.namespace.namespaceName,
       },
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          `curl -f http://localhost:${Containers.PROXY_PORT}/ || exit 1`,
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
+      },
     });
 
     this.serviceTaskDefinition = new ecs.Ec2TaskDefinition(
@@ -72,6 +83,16 @@ export class Containers extends Construct {
       memoryLimitMiB: 512,
       environment: {
         NAMESPACE: props.networking.namespace.namespaceName,
+      },
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          `curl -f http://localhost:${Containers.SERVICE_PORT}/ || exit 1`,
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
       },
     });
   }
