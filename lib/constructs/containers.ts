@@ -2,6 +2,7 @@ import { Construct } from "constructs";
 import * as cdk from "aws-cdk-lib/core";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as autoscaling from "aws-cdk-lib/aws-autoscaling";
 import { Networking } from "./networking";
 
@@ -51,16 +52,29 @@ export class Containers extends Construct {
       },
     );
 
+    // Grant Route53 permissions to proxy task for DNS registration
+    this.proxyTaskDefinition.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "route53:ChangeResourceRecordSets",
+          "route53:ListResourceRecordSets",
+        ],
+        resources: [props.networking.hostedZone.hostedZoneArn],
+      }),
+    );
+
     this.proxyTaskDefinition.addContainer(Containers.PROXY_CONTAINER_NAME, {
       image: ecs.ContainerImage.fromAsset("lib/proxy"),
       portMappings: [{ containerPort: Containers.PROXY_PORT }],
       environment: {
-        NAMESPACE: props.networking.namespace.namespaceName,
+        HOSTED_ZONE_ID: props.networking.hostedZone.hostedZoneId,
+        DOMAIN: props.networking.hostedZone.zoneName,
       },
       healthCheck: {
         command: [
           "CMD-SHELL",
-          `curl -f http://localhost:${Containers.PROXY_PORT}/ || exit 1`,
+          `curl -f http://localhost:${Containers.PROXY_PORT}/health || exit 1`,
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
@@ -81,9 +95,6 @@ export class Containers extends Construct {
       image: ecs.ContainerImage.fromAsset("lib/service"),
       portMappings: [{ containerPort: Containers.SERVICE_PORT }],
       memoryLimitMiB: 512,
-      environment: {
-        NAMESPACE: props.networking.namespace.namespaceName,
-      },
       healthCheck: {
         command: [
           "CMD-SHELL",

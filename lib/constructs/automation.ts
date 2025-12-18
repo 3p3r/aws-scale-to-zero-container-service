@@ -6,7 +6,7 @@ import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { Networking } from "./networking";
-import { Containers } from "./containers";
+import type { Containers } from "./containers";
 
 export interface AutomationProps {
   networking: Networking;
@@ -25,10 +25,9 @@ export class Automation extends Construct {
       entry: "lib/lambdas/discovery.ts",
       runtime: lambda.Runtime.NODEJS_LATEST,
       environment: {
-        NAMESPACE_ID: props.networking.namespace.namespaceId,
+        HOSTED_ZONE_ID: props.networking.hostedZone.hostedZoneId,
+        DOMAIN: props.networking.hostedZone.zoneName,
         ALLOWED_CLUSTER_ARNS: `${props.containers.proxyCluster.clusterArn},${props.containers.serviceCluster.clusterArn}`,
-        PROXY_PORT: Containers.PROXY_PORT.toString(),
-        SERVICE_PORT: Containers.SERVICE_PORT.toString(),
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
@@ -41,13 +40,10 @@ export class Automation extends Construct {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
-          "servicediscovery:CreateService",
-          "servicediscovery:ListServices",
-          "servicediscovery:RegisterInstance",
-          "servicediscovery:DeregisterInstance",
-          "servicediscovery:GetInstance",
+          "route53:ChangeResourceRecordSets",
+          "route53:ListResourceRecordSets",
         ],
-        resources: ["*"],
+        resources: [props.networking.hostedZone.hostedZoneArn],
       }),
     );
 
@@ -59,6 +55,7 @@ export class Automation extends Construct {
         SERVICE_ASG_NAME:
           props.containers.serviceAutoScalingGroup.autoScalingGroupName,
         MAX_TASKS_PER_INSTANCE: "3",
+        // LAUNCH_LOCKS_TABLE_NAME will be set by InfraStack after table creation
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
@@ -109,7 +106,6 @@ export class Automation extends Construct {
       new targets.LambdaFunction(this.autoscaler),
     );
 
-    // Scheduled rule to periodically check and scale down (backup)
     const scheduledRule = new events.Rule(this, "AutoscalerScheduledRule", {
       schedule: events.Schedule.rate(cdk.Duration.hours(6)),
     });

@@ -1,30 +1,33 @@
 import { writeFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 
-const serviceName = process.env.SERVICE_NAME;
-if (!serviceName) {
-  throw new Error("SERVICE_NAME environment variable is required");
+const upstreamHost = process.env.UPSTREAM_HOST;
+if (!upstreamHost) {
+  throw new Error("UPSTREAM_HOST environment variable is required");
 }
-
-const upstreamHost =
-  process.env.UPSTREAM_HOST || `${serviceName}.service.local`;
 const upstreamPort = process.env.UPSTREAM_PORT || "9050";
 const proxyPort = process.env.PROXY_PORT || "9060";
 
-const resolver = process.env.DNS_RESOLVER || "169.254.169.253";
+console.log(`Proxy config: upstream=${upstreamHost}:${upstreamPort}`);
 
 const nginxConfig = `
-resolver ${resolver} valid=10s;
-resolver_timeout 5s;
+upstream backend {
+    server ${upstreamHost}:${upstreamPort};
+}
 
 server {
     listen ${proxyPort};
     server_name _;
 
-    set $backend "${upstreamHost}:${upstreamPort}";
+    # Health check endpoint that always returns 200 (for ECS health checks)
+    location = /health {
+        access_log off;
+        default_type text/plain;
+        return 200 'OK';
+    }
 
     location / {
-        proxy_pass http://$backend;
+        proxy_pass http://backend;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;

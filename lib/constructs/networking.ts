@@ -1,19 +1,17 @@
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as dns from "aws-cdk-lib/aws-servicediscovery";
+import * as route53 from "aws-cdk-lib/aws-route53";
 import { Containers } from "./containers";
-
-export interface NetworkingProps {
-  namespaceName?: string;
-}
 
 export class Networking extends Construct {
   public readonly vpc: ec2.Vpc;
-  public readonly namespace: dns.PrivateDnsNamespace;
+  public readonly hostedZone: route53.IHostedZone;
   public readonly securityGroup: ec2.SecurityGroup;
 
-  constructor(scope: Construct, id: string, props?: NetworkingProps) {
+  constructor(scope: Construct, id: string) {
     super(scope, id);
+
+    const domain = this.node.tryGetContext("domain") || "example.com";
 
     this.vpc = new ec2.Vpc(this, "Vpc", {
       maxAzs: 2,
@@ -32,9 +30,8 @@ export class Networking extends Construct {
       ],
     });
 
-    this.namespace = new dns.PrivateDnsNamespace(this, "Namespace", {
-      name: props?.namespaceName || "local",
-      vpc: this.vpc,
+    this.hostedZone = route53.HostedZone.fromLookup(this, "HostedZone", {
+      domainName: domain,
     });
 
     this.securityGroup = new ec2.SecurityGroup(this, "TaskSecurityGroup", {
@@ -52,6 +49,12 @@ export class Networking extends Construct {
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
       ec2.Port.tcp(Containers.PROXY_PORT),
       "Allow proxy container port",
+    );
+
+    this.securityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(Containers.PROXY_PORT),
+      "Allow Internet access to proxy container port",
     );
   }
 }

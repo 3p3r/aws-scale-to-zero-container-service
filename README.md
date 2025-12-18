@@ -22,49 +22,40 @@ A serverless scale-to-zero container service pattern in AWS that automatically l
 - Configurable maximum tasks per instance (default: 3)
 - Instances with running tasks are protected from scale-in
 - Scales to zero when no tasks are running
-- Scheduled backup checks ensure proper scaling
 
-### 🔍 Automatic Service Discovery
-- Tasks automatically register with AWS Service Discovery on startup
-- Private DNS namespace enables service-to-service communication
-- Tasks automatically deregister on shutdown
-- DNS resolution: `<SERVICE_NAME>.proxy.local` and `<SERVICE_NAME>.service.local`
-
-### ⚡ Smart Capacity Management
-- Automatically scales EC2 capacity when needed
-- Detects resource constraints (CPU/MEMORY) and scales up proactively
-- Retries with exponential backoff for resilient task launching
-- Configurable timeouts and retry policies
+### 🔍 Automatic DNS Registration
+- Proxy containers register with Route53 on startup using their public IP
+- Services accessible via `<SERVICE_NAME>.<DOMAIN>:9060`
+- DNS records automatically cleaned up when tasks stop
+- Private namespace for internal service-to-proxy communication
 
 ## Architecture Components
 
-1. **Fargate Cluster** - Runs stateless proxy containers that reverse proxy to service containers
-2. **EC2 Cluster** - Runs service containers with auto-scaling and instance protection
-3. **Service Discovery** - Private DNS namespace (`local`) for service-to-service communication
-4. **Discovery Lambda** - Automatically registers/deregisters tasks in Service Discovery on task state changes
-5. **Autoscaler Lambda** - Scales EC2 cluster based on task load (event-driven + scheduled backup)
-6. **Wrapper/Orchestrator** - Next.js API that orchestrates task launches and provides service endpoints
+1. **Fargate Cluster** - Runs stateless proxy containers with public IPs
+2. **EC2 Cluster** - Runs service containers with auto-scaling
+3. **Route53** - Public DNS for proxy access (`<service>.<domain>`)
+4. **Discovery Lambda** - Adjusts locks, cleans up Route53 on task stop
+5. **Autoscaler Lambda** - Scales EC2 cluster based on task load
+6. **Wrapper** - Next.js API that orchestrates task launches
 
 ## Container Architecture
 
 **Proxy Container** (Fargate):
 - Nginx reverse proxy on port 9060
-- Health checks service container with exponential backoff
+- Registers with Route53 on startup
+- Health checks service container
 - Self-destructs if service becomes unhealthy
-- Resolves services via DNS: `<SERVICE_NAME>.service.local:9050`
 
 **Service Container** (EC2):
-- Nginx serving content on port 9050 (internal only, not directly accessible)
-- Health checks proxy container with exponential backoff
+- Nginx serving content on port 9050
+- Health checks proxy container
 - Self-destructs if proxy becomes unhealthy
-- Graceful shutdown support
-- Runs in private subnets - all access must go through the proxy
 
 ## Deployment
 
 ```bash
 npm install
-cdk deploy
+cdk deploy -c domain=pleadables.chat
 ```
 
 ## Local Testing
@@ -76,8 +67,6 @@ docker-compose up --build
 Access services through the proxy:
 - `http://localhost:9060`
 
-**Note**: Service containers are not directly accessible. All access must go through the proxy container for security and proper routing.
-
 ## Configuration
 
-All timing, capacity, and health check parameters are configurable via environment variables with sensible defaults. See individual component files for configuration options.
+All timing, capacity, and health check parameters are configurable via environment variables with sensible defaults.

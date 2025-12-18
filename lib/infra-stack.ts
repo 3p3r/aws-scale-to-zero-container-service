@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib/core";
 import { Construct } from "constructs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { Nextjs } from "cdk-nextjs-standalone";
 import { Networking } from "./constructs/networking";
 import { Containers } from "./constructs/containers";
@@ -22,6 +23,17 @@ export class InfraStack extends cdk.Stack {
       containers,
     });
 
+    // DynamoDB table for service launch locks
+    const launchLocksTable = new dynamodb.Table(this, "LaunchLocks", {
+      partitionKey: {
+        name: "serviceName",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "ttl",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const publicSubnets = networking.vpc.publicSubnets.map(
       (subnet) => subnet.subnetId,
     );
@@ -32,7 +44,7 @@ export class InfraStack extends cdk.Stack {
     const wrapper = new Nextjs(this, "Wrapper", {
       nextjsPath: "./lib/wrapper",
       environment: {
-        NAMESPACE: networking.namespace.namespaceName,
+        DOMAIN: networking.hostedZone.zoneName,
         PROXY_CLUSTER: containers.proxyCluster.clusterName,
         SERVICE_CLUSTER: containers.serviceCluster.clusterName,
         PROXY_TASK_DEFINITION: containers.proxyTaskDefinition.taskDefinitionArn,
@@ -45,21 +57,26 @@ export class InfraStack extends cdk.Stack {
           containers.serviceAutoScalingGroup.autoScalingGroupName,
         PROXY_CONTAINER_NAME: Containers.PROXY_CONTAINER_NAME,
         SERVICE_CONTAINER_NAME: Containers.SERVICE_CONTAINER_NAME,
-        MAX_TASKS_PER_INSTANCE: "3",
-        SCALE_UP_WAIT_TIME_MS: "10000",
+        HOSTED_ZONE_ID: networking.hostedZone.hostedZoneId,
+        LAUNCH_LOCKS_TABLE_NAME: launchLocksTable.tableName,
       },
     });
 
-    // Set timeout to 6 minutes to accommodate 5-minute retry window
     const cfnFunction = wrapper.serverFunction.lambdaFunction.node
       .defaultChild as lambda.CfnFunction;
-    cfnFunction.timeout = 360; // 6 minutes in seconds
+    // Timeout increased to 15 minutes to handle:
+    // - EC2 instance scaling (up to 3 minutes)
+    // - Task launches (up to 5 minutes)
+    // - DNS propagation wait (up to 90 seconds)
+    // - Buffer for network delays
+    cfnFunction.timeout = 900; // 15 minutes
 
     wrapper.serverFunction.lambdaFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
           "ecs:RunTask",
+          "ecs:StopTask",
           "ecs:ListTasks",
           "ecs:DescribeTasks",
           "ecs:ListContainerInstances",
@@ -93,12 +110,14 @@ export class InfraStack extends cdk.Stack {
       }),
     );
 
-    wrapper.serverFunction.lambdaFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["ec2:DescribeNetworkInterfaces"],
-        resources: ["*"],
-      }),
+    // Grant DynamoDB permissions
+    launchLocksTable.grantReadWriteData(wrapper.serverFunction.lambdaFunction);
+
+    // Grant autoscaler access to lock table for distributed locking
+    launchLocksTable.grantReadWriteData(automation.autoscaler);
+    automation.autoscaler.addEnvironment(
+      "LAUNCH_LOCKS_TABLE_NAME",
+      launchLocksTable.tableName,
     );
 
     new cdk.CfnOutput(this, "WrapperUrl", {

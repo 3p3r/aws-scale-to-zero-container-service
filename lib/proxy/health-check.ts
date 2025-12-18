@@ -1,17 +1,18 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { existsSync, readFileSync } from "fs";
-import { backOff } from "exponential-backoff";
+import delay from "delay";
 
 const execAsync = promisify(exec);
 
-const serviceName = process.env.SERVICE_NAME;
-if (!serviceName) {
-  throw new Error("SERVICE_NAME environment variable is required");
+const upstreamHost = process.env.UPSTREAM_HOST;
+if (!upstreamHost) {
+  console.log(
+    "UPSTREAM_HOST not set, health check disabled - exiting gracefully",
+  );
+  process.exit(0);
 }
 
-const upstreamHost =
-  process.env.UPSTREAM_HOST || `${serviceName}.service.local`;
 const upstreamPort = process.env.UPSTREAM_PORT || "9050";
 const healthCheckUrl = `http://${upstreamHost}:${upstreamPort}`;
 const maxFailures = parseInt(process.env.MAX_HEALTH_CHECK_FAILURES || "5", 10);
@@ -20,10 +21,9 @@ const baseInterval = parseInt(
   10,
 );
 const initialGracePeriod = parseInt(
-  process.env.HEALTH_CHECK_INITIAL_GRACE_PERIOD_MS || "180000",
+  process.env.HEALTH_CHECK_INITIAL_GRACE_PERIOD_MS || "600000",
   10,
-); // 3 minutes default
-const maxDelay = parseInt(process.env.HEALTH_CHECK_MAX_DELAY_MS || "30000", 10);
+); // 10 minutes default - EC2 instances need time to spin up from 0
 const SUPERVISOR_PID_FILE = "/var/run/supervisord.pid";
 
 let consecutiveFailures = 0;
@@ -70,49 +70,49 @@ async function shutdown() {
   process.exit(1);
 }
 
+async function performHealthCheckWithRetry(): Promise<boolean> {
+  // Try a few times quickly to handle transient network issues
+  // This performs up to 5 attempts with 1-second delays between them
+  // Total retry time: up to 4 seconds (4 delays × 1s)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const isHealthy = await performHealthCheck();
+    if (isHealthy) {
+      return true;
+    }
+    if (attempt < 4) {
+      // Small delay between retries to handle transient network issues
+      await delay(1000);
+    }
+  }
+  return false;
+}
+
 async function runHealthCheckWithBackoff(): Promise<boolean> {
-  try {
-    return await backOff(
-      async () => {
-        const isHealthy = await performHealthCheck();
-        if (!isHealthy) {
-          consecutiveFailures++;
-          console.log(
-            `Health check failed (${consecutiveFailures}/${maxFailures} consecutive failures)`,
-          );
-          throw new Error("Health check failed");
-        }
-        // Health check passed
-        if (consecutiveFailures > 0) {
-          console.log(
-            `Health check passed (was ${consecutiveFailures} consecutive failures)`,
-          );
-        }
-        consecutiveFailures = 0;
-        return true;
-      },
-      {
-        numOfAttempts: maxFailures,
-        startingDelay: baseInterval,
-        timeMultiple: 2,
-        maxDelay: maxDelay,
-        jitter: "full",
-        retry: () => {
-          if (consecutiveFailures >= maxFailures) {
-            return false; // Stop retrying, will shutdown
-          }
-          return true; // Continue retrying
-        },
-      },
+  const isHealthy = await performHealthCheckWithRetry();
+
+  if (!isHealthy) {
+    consecutiveFailures++;
+    console.log(
+      `Health check failed (${consecutiveFailures}/${maxFailures} consecutive failures)`,
     );
-  } catch (error) {
-    // All retries exhausted
+
     if (consecutiveFailures >= maxFailures) {
       await shutdown();
       return false;
     }
+
+    // Return false to indicate unhealthy, but don't shutdown yet
     return false;
   }
+
+  // Health check passed
+  if (consecutiveFailures > 0) {
+    console.log(
+      `Health check passed (was ${consecutiveFailures} consecutive failures)`,
+    );
+  }
+  consecutiveFailures = 0;
+  return true;
 }
 
 async function startHealthChecks() {
@@ -121,7 +121,7 @@ async function startHealthChecks() {
   console.log(
     `Waiting ${initialGracePeriod}ms grace period before starting health checks...`,
   );
-  await new Promise((resolve) => setTimeout(resolve, initialGracePeriod));
+  await delay(initialGracePeriod);
   console.log("Grace period complete, starting health checks");
 
   while (!isShuttingDown) {
@@ -131,10 +131,10 @@ async function startHealthChecks() {
       break;
     }
 
-    if (isHealthy) {
-      await new Promise((resolve) => setTimeout(resolve, baseInterval));
-    }
-    // If unhealthy, backOff already handled the retries and delays
+    // Wait before next check cycle
+    // Note: Actual check interval = retry time (up to 4s) + baseInterval (5s) = ~9s minimum
+    // If unhealthy, we still wait to give it time to recover, but consecutiveFailures will accumulate
+    await delay(baseInterval);
   }
 }
 

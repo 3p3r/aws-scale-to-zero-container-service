@@ -11,7 +11,7 @@ services:
       - "9050"
     environment:
       - SERVICE_NAME=test-service
-      - NAMESPACE=local
+      - DOMAIN=localhost
       - PROXY_HOST=test-service.proxy.local
       - PROXY_PORT=9060
     networks:
@@ -31,10 +31,10 @@ services:
       - "9060"
     environment:
       - SERVICE_NAME=test-service
-      - NAMESPACE=local
       - UPSTREAM_HOST=test-service.service.local
       - UPSTREAM_PORT=9050
       - DNS_RESOLVER=127.0.0.11
+      - SKIP_DNS_REGISTRATION=true
     depends_on:
       - service
     networks:
