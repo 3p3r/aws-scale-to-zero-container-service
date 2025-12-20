@@ -15,6 +15,7 @@ import {
 } from "@aws-sdk/client-auto-scaling";
 import { acquireLock, releaseLock } from "../../../lib/lock";
 import pWaitFor from "p-wait-for";
+import type { StatusResponse } from "../../../lib/types";
 
 const ecs = new ECSClient();
 const autoscaling = new AutoScalingClient();
@@ -59,13 +60,11 @@ function createResponse(
   serviceUrl: string,
   httpStatus: number = 200,
 ): NextResponse {
-  return NextResponse.json(
-    {
-      status,
-      serviceUrl,
-    },
-    { status: httpStatus },
-  );
+  const response: StatusResponse = {
+    status: status === "error" ? "starting" : status,
+    url: serviceUrl,
+  };
+  return NextResponse.json(response, { status: httpStatus });
 }
 
 function extractTaskArn(
