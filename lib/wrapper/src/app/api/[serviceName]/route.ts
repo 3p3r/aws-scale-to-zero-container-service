@@ -4,6 +4,7 @@ import {
   ListTasksCommand,
   DescribeTasksCommand,
   RunTaskCommand,
+  RunTaskCommandOutput,
   ListContainerInstancesCommand,
   DescribeContainerInstancesCommand,
 } from "@aws-sdk/client-ecs";
@@ -15,16 +16,15 @@ import {
 import { acquireLock, releaseLock } from "../../../lib/lock";
 import pWaitFor from "p-wait-for";
 
-const ecs = new ECSClient({});
-const autoscaling = new AutoScalingClient({});
+const ecs = new ECSClient();
+const autoscaling = new AutoScalingClient();
 
-// Timeout constants (in milliseconds)
-const TASK_RUNNING_TIMEOUT_MS = 300_000; // 5 minutes - time to wait for task to reach RUNNING
-const PROXY_ACCESSIBLE_TIMEOUT_MS = 90_000; // 90 seconds - DNS propagation + service startup
-const EC2_INSTANCE_JOIN_TIMEOUT_MS = 180_000; // 3 minutes - time for EC2 instance to join cluster
-const TASK_CHECK_INTERVAL_MS = 3_000; // 3 seconds - interval between task status checks
-const PROXY_CHECK_INTERVAL_MS = 2_000; // 2 seconds - interval between proxy accessibility checks
-const EC2_CAPACITY_CHECK_INTERVAL_MS = 5_000; // 5 seconds - interval between capacity checks
+const TASK_RUNNING_TIMEOUT_MS = 300_000;
+const PROXY_ACCESSIBLE_TIMEOUT_MS = 90_000;
+const EC2_INSTANCE_JOIN_TIMEOUT_MS = 180_000;
+const TASK_CHECK_INTERVAL_MS = 3_000;
+const PROXY_CHECK_INTERVAL_MS = 2_000;
+const EC2_CAPACITY_CHECK_INTERVAL_MS = 5_000;
 
 const config = {
   proxyCluster: process.env.PROXY_CLUSTER!,
@@ -40,10 +40,6 @@ const config = {
   domain: process.env.DOMAIN || "example.com",
 };
 
-// --- Route Handler ---
-
-// Validate service name to prevent injection attacks
-// Service name must be DNS-safe: alphanumeric and hyphens only, 1-63 chars
 const SERVICE_NAME_REGEX = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 function validateServiceName(serviceName: string): void {
@@ -60,31 +56,52 @@ function validateServiceName(serviceName: string): void {
   }
 }
 
+function createResponse(
+  status: "ready" | "starting" | "error",
+  serviceUrl: string,
+  httpStatus: number = 200,
+): NextResponse {
+  return NextResponse.json(
+    {
+      status,
+      serviceUrl,
+    },
+    { status: httpStatus },
+  );
+}
+
+function extractTaskArn(
+  response: RunTaskCommandOutput,
+  taskType: "service" | "proxy",
+): string {
+  const taskArn = response.tasks?.[0]?.taskArn;
+  if (!taskArn) {
+    const failure = response.failures?.[0];
+    throw new Error(
+      `Failed to launch ${taskType} task: ${failure?.reason ?? "unknown"}`,
+    );
+  }
+  return taskArn;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ serviceName: string }> },
 ) {
   const { serviceName } = await params;
 
-  // Validate service name to prevent injection
+  const serviceUrl = `http://${serviceName}.${config.domain}:9060`;
+
   try {
     validateServiceName(serviceName);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Invalid service name",
-        status: "error",
-      },
-      { status: 400 },
-    );
+    return createResponse("error", serviceUrl, 400);
   }
 
   const searchParams = request.nextUrl.searchParams;
   const checkStatus = searchParams.get("status") === "true";
-  const serviceUrl = `http://${serviceName}.${config.domain}:9060`;
 
   try {
-    // Check for existing tasks
     const [proxyTask, serviceTask] = await Promise.all([
       findTask(config.proxyCluster, serviceName, "FARGATE"),
       findTask(config.serviceCluster, serviceName, "EC2"),
@@ -94,116 +111,62 @@ export async function GET(
     const serviceRunning =
       serviceTask?.status === "RUNNING" && !!serviceTask.privateIp;
 
-    // Status check - just return current state
     if (checkStatus) {
       let isAccessible = false;
       if (proxyRunning && serviceRunning) {
         isAccessible = await checkProxyAccessible(serviceName);
       }
 
-      return NextResponse.json({
-        status: isAccessible ? "ready" : "starting",
-        proxyRunning,
-        serviceRunning,
-        proxyTask: proxyTask?.arn,
-        serviceTask: serviceTask?.arn,
-        serviceIp: serviceTask?.privateIp,
-        url: serviceUrl,
-        isAccessible,
-      });
+      return createResponse(isAccessible ? "ready" : "starting", serviceUrl);
     }
 
-    // If both running and accessible, return immediately
     if (proxyRunning && serviceRunning) {
       const isAccessible = await checkProxyAccessible(serviceName);
       if (isAccessible) {
-        return NextResponse.json({
-          status: "ready",
-          proxyRunning: true,
-          serviceRunning: true,
-          proxyTask: proxyTask?.arn,
-          serviceTask: serviceTask?.arn,
-          serviceIp: serviceTask?.privateIp,
-          url: serviceUrl,
-          isAccessible: true,
-        });
+        return createResponse("ready", serviceUrl);
       }
     }
 
-    // Try to acquire lock - if we can't, reject the request
     const lockResult = await acquireLock(serviceName);
     if (!lockResult.acquired) {
-      return NextResponse.json(
-        {
-          status: "starting",
-          message: lockResult.reason || "Service launch in progress",
-          proxyRunning: false,
-          serviceRunning: false,
-          url: serviceUrl,
-          isAccessible: false,
-        },
-        { status: 409 }, // Conflict
-      );
+      return createResponse("starting", serviceUrl, 409);
     }
 
-    // We have the lock - proceed with launch
     let lockReleased = false;
     try {
-      // Recheck tasks after acquiring lock (another request might have launched them)
       const [recheckProxy, recheckService] = await Promise.all([
         findTask(config.proxyCluster, serviceName, "FARGATE"),
         findTask(config.serviceCluster, serviceName, "EC2"),
       ]);
 
       if (recheckProxy && recheckService && recheckService.privateIp) {
-        // Tasks already exist, release lock immediately and return
-        console.log(`[${serviceName}] Tasks already exist, releasing lock...`);
         try {
           await releaseLock(serviceName);
           lockReleased = true;
         } catch (error) {
           console.warn(`[${serviceName}] Failed to release lock:`, error);
         }
-        return NextResponse.json({
-          status: "ready",
-          proxyRunning: true,
-          serviceRunning: true,
-          proxyTask: recheckProxy.arn,
-          serviceTask: recheckService.arn,
-          serviceIp: recheckService.privateIp,
-          url: serviceUrl,
-          isAccessible: await checkProxyAccessible(serviceName),
-        });
+        return createResponse("ready", serviceUrl);
       }
 
-      // Launch service task if needed
       let serviceIp = recheckService?.privateIp;
       let serviceTaskArn = recheckService?.arn;
 
       if (!serviceTaskArn || !serviceIp) {
-        console.log(`[${serviceName}] Launching service task...`);
-
-        // Ensure capacity and retry on resource errors
         let retries = 0;
         const maxRetries = 3;
         while (retries <= maxRetries) {
           try {
             await ensureEc2Capacity();
             serviceTaskArn = await launchServiceTask(serviceName);
-            break; // Success, exit retry loop
+            break;
           } catch (error: any) {
             const errorMessage = error.message || "";
-            // Check if it's a resource error (memory, CPU, etc.)
             if (errorMessage.includes("RESOURCE:") && retries < maxRetries) {
               retries++;
-              console.log(
-                `[${serviceName}] Resource error (attempt ${retries}/${maxRetries}), scaling up and retrying...`,
-              );
-              // Wait a bit before retrying to allow instance to join
               await new Promise((resolve) => setTimeout(resolve, 10000));
               continue;
             }
-            // Not a resource error or max retries reached, throw
             throw error;
           }
         }
@@ -212,7 +175,6 @@ export async function GET(
           throw new Error("Failed to launch service task after retries");
         }
 
-        // Wait for service to be RUNNING and get IP
         const runningService = await waitForTaskRunning(
           config.serviceCluster,
           serviceName,
@@ -227,16 +189,10 @@ export async function GET(
         throw new Error("Service task has no private IP");
       }
 
-      // Launch proxy task if needed
       let proxyTaskArn = recheckProxy?.arn;
 
       if (!proxyTaskArn) {
-        console.log(
-          `[${serviceName}] Launching proxy task with service IP ${serviceIp}...`,
-        );
         proxyTaskArn = await launchProxyTask(serviceName, serviceIp);
-
-        // Wait for proxy to be RUNNING
         await waitForTaskRunning(
           config.proxyCluster,
           serviceName,
@@ -245,11 +201,6 @@ export async function GET(
         );
       }
 
-      // Both containers are now launched and running - release lock immediately
-      // to prevent deadlocks if Lambda times out during accessibility check
-      console.log(
-        `[${serviceName}] Both containers launched successfully, releasing lock...`,
-      );
       try {
         await releaseLock(serviceName);
         lockReleased = true;
@@ -257,28 +208,12 @@ export async function GET(
         console.warn(`[${serviceName}] Failed to release lock:`, error);
       }
 
-      // Wait for service to be accessible via DNS
-      // DNS propagation typically takes 10-30 seconds for Route53
-      // We wait up to 90 seconds to account for propagation delays
       await waitForProxyAccessible(serviceName, PROXY_ACCESSIBLE_TIMEOUT_MS);
 
-      return NextResponse.json({
-        status: "ready",
-        proxyRunning: true,
-        serviceRunning: true,
-        proxyTask: proxyTaskArn,
-        serviceTask: serviceTaskArn,
-        serviceIp,
-        url: serviceUrl,
-        isAccessible: true,
-      });
+      return createResponse("ready", serviceUrl);
     } finally {
-      // Safety net: release lock if it wasn't already released
-      // (This handles error cases where containers weren't successfully launched)
       if (!lockReleased) {
-        await releaseLock(serviceName).catch(() => {
-          // Ignore errors - lock might have expired or been released already
-        });
+        await releaseLock(serviceName).catch(() => {});
       }
     }
   } catch (error) {
@@ -301,18 +236,9 @@ export async function GET(
       );
     });
 
-    return NextResponse.json(
-      {
-        error: errorMessage,
-        status: "error",
-        serviceName, // Include serviceName in error response for debugging
-      },
-      { status: 500 },
-    );
+    return createResponse("error", serviceUrl, 500);
   }
 }
-
-// --- Helper Functions ---
 
 interface TaskInfo {
   arn: string;
@@ -333,8 +259,6 @@ async function findTask(
   const taskArns = [...(running.taskArns ?? []), ...(pending.taskArns ?? [])];
   if (taskArns.length === 0) return null;
 
-  // DescribeTasksCommand has a limit of 100 tasks per call
-  // If we have more, we need to batch them
   const BATCH_SIZE = 100;
   const allTasks = [];
 
@@ -354,8 +278,6 @@ async function findTask(
       continue;
     }
 
-    // Check startedBy or environment variable
-    // Validate serviceName to prevent matching wrong tasks
     const isOurTask =
       (task.startedBy?.startsWith(`wrapper-${serviceName}`) &&
         SERVICE_NAME_REGEX.test(serviceName)) ||
@@ -371,7 +293,6 @@ async function findTask(
     if (isOurTask) {
       let privateIp: string | undefined;
 
-      // Get IP from attachments (Fargate)
       for (const attachment of task.attachments || []) {
         if (attachment.status === "ATTACHED") {
           const ip = attachment.details?.find(
@@ -384,7 +305,6 @@ async function findTask(
         }
       }
 
-      // Get IP from containers (EC2)
       if (!privateIp) {
         for (const container of task.containers || []) {
           if (container.networkInterfaces?.[0]?.privateIpv4Address) {
@@ -417,24 +337,16 @@ async function waitForTaskRunning(
   await pWaitFor(
     async () => {
       const found = await findTask(cluster, serviceName, launchType);
-      // Normalize ARNs for comparison (trim whitespace, ensure full ARN format)
       const normalizeArn = (arn: string) => arn.trim();
       if (found && normalizeArn(found.arn) === normalizeArn(taskArn)) {
         if (
           found.status === "RUNNING" &&
           (!requirePrivateIp || found.privateIp)
         ) {
-          return true; // Condition met - task is running
+          return true;
         }
-        console.log(
-          `[${serviceName}] Waiting for ${launchType} task ${taskArn} (status: ${found.status})`,
-        );
-      } else {
-        console.log(
-          `[${serviceName}] Waiting for ${launchType} task ${taskArn} to appear...`,
-        );
       }
-      return false; // Condition not met - keep waiting
+      return false;
     },
     {
       interval: TASK_CHECK_INTERVAL_MS,
@@ -442,7 +354,6 @@ async function waitForTaskRunning(
     },
   );
 
-  // After condition is met, fetch the task one more time to return it
   const task = await findTask(cluster, serviceName, launchType);
   if (!task) {
     throw new Error(
@@ -454,11 +365,7 @@ async function waitForTaskRunning(
 }
 
 async function checkProxyAccessible(serviceName: string): Promise<boolean> {
-  // Validate serviceName to prevent injection (should already be validated, but double-check)
   if (!SERVICE_NAME_REGEX.test(serviceName)) {
-    console.warn(
-      `[${serviceName}] Invalid service name format in checkProxyAccessible`,
-    );
     return false;
   }
 
@@ -470,8 +377,6 @@ async function checkProxyAccessible(serviceName: string): Promise<boolean> {
     });
     return response.ok;
   } catch (error) {
-    // Log error for debugging but don't expose to caller
-    console.debug(`[${serviceName}] Proxy accessibility check failed:`, error);
     return false;
   }
 }
@@ -490,14 +395,9 @@ async function waitForProxyAccessible(
         timeout: timeoutMs,
       },
     );
-    console.log(
-      `[${serviceName}] Proxy is now accessible via DNS after waiting for propagation`,
-    );
   } catch (error) {
-    // DNS propagation can take 10-60 seconds for Route53
-    // This is expected and the service may still work via direct IP
     console.warn(
-      `[${serviceName}] Proxy not accessible via DNS after ${timeoutMs}ms (DNS may still be propagating)`,
+      `[${serviceName}] Proxy not accessible via DNS after ${timeoutMs}ms`,
     );
   }
 }
@@ -508,7 +408,6 @@ async function ensureEc2Capacity(): Promise<void> {
   );
 
   if ((instances.containerInstanceArns?.length ?? 0) > 0) {
-    // Check if any instance has capacity
     const described = await ecs.send(
       new DescribeContainerInstancesCommand({
         cluster: config.serviceCluster,
@@ -529,7 +428,6 @@ async function ensureEc2Capacity(): Promise<void> {
     }
   }
 
-  // Scale up ASG
   const asgDesc = await autoscaling.send(
     new DescribeAutoScalingGroupsCommand({
       AutoScalingGroupNames: [config.asgName],
@@ -549,7 +447,6 @@ async function ensureEc2Capacity(): Promise<void> {
     );
   }
 
-  // Wait for instance to join cluster
   try {
     await pWaitFor(
       async () => {
@@ -571,7 +468,6 @@ async function ensureEc2Capacity(): Promise<void> {
 }
 
 async function launchServiceTask(serviceName: string): Promise<string> {
-  // Validate serviceName again before using in startedBy tag
   if (!SERVICE_NAME_REGEX.test(serviceName)) {
     throw new Error(`Invalid service name: ${serviceName}`);
   }
@@ -604,22 +500,13 @@ async function launchServiceTask(serviceName: string): Promise<string> {
     }),
   );
 
-  const taskArn = response.tasks?.[0]?.taskArn;
-  if (!taskArn) {
-    const failure = response.failures?.[0];
-    throw new Error(
-      `Failed to launch service task: ${failure?.reason ?? "unknown"}`,
-    );
-  }
-
-  return taskArn;
+  return extractTaskArn(response, "service");
 }
 
 async function launchProxyTask(
   serviceName: string,
   serviceIp: string,
 ): Promise<string> {
-  // Validate inputs
   if (!SERVICE_NAME_REGEX.test(serviceName)) {
     throw new Error(`Invalid service name: ${serviceName}`);
   }
@@ -656,13 +543,5 @@ async function launchProxyTask(
     }),
   );
 
-  const taskArn = response.tasks?.[0]?.taskArn;
-  if (!taskArn) {
-    const failure = response.failures?.[0];
-    throw new Error(
-      `Failed to launch proxy task: ${failure?.reason ?? "unknown"}`,
-    );
-  }
-
-  return taskArn;
+  return extractTaskArn(response, "proxy");
 }

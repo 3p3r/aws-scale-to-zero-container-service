@@ -71,16 +71,12 @@ async function shutdown() {
 }
 
 async function performHealthCheckWithRetry(): Promise<boolean> {
-  // Try a few times quickly to handle transient network issues
-  // This performs up to 5 attempts with 1-second delays between them
-  // Total retry time: up to 4 seconds (4 delays × 1s)
   for (let attempt = 0; attempt < 5; attempt++) {
     const isHealthy = await performHealthCheck();
     if (isHealthy) {
       return true;
     }
     if (attempt < 4) {
-      // Small delay between retries to handle transient network issues
       await delay(1000);
     }
   }
@@ -101,11 +97,9 @@ async function runHealthCheckWithBackoff(): Promise<boolean> {
       return false;
     }
 
-    // Return false to indicate unhealthy, but don't shutdown yet
     return false;
   }
 
-  // Health check passed
   if (consecutiveFailures > 0) {
     console.log(
       `Health check passed (was ${consecutiveFailures} consecutive failures)`,
@@ -116,13 +110,7 @@ async function runHealthCheckWithBackoff(): Promise<boolean> {
 }
 
 async function startHealthChecks() {
-  // Wait for initial grace period before starting health checks
-  // This gives time for the service to launch and register with service discovery
-  console.log(
-    `Waiting ${initialGracePeriod}ms grace period before starting health checks...`,
-  );
   await delay(initialGracePeriod);
-  console.log("Grace period complete, starting health checks");
 
   while (!isShuttingDown) {
     const isHealthy = await runHealthCheckWithBackoff();
@@ -131,9 +119,6 @@ async function startHealthChecks() {
       break;
     }
 
-    // Wait before next check cycle
-    // Note: Actual check interval = retry time (up to 4s) + baseInterval (5s) = ~9s minimum
-    // If unhealthy, we still wait to give it time to recover, but consecutiveFailures will accumulate
     await delay(baseInterval);
   }
 }

@@ -10,7 +10,7 @@
     "install": "npm-run-all --parallel install:*",
     "test": "exit 0",
     "synth": "cdk synth",
-    "deploy": "cdk deploy",
+    "deploy": "cdk deploy --require-approval=never",
     "destroy": "cdk destroy",
     "format": "biome format --write .",
     "lint": "biome lint .",
@@ -23,8 +23,10 @@
   "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-auto-scaling": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
     "@aws-sdk/client-ecs": "^3.0.0",
     "@aws-sdk/client-route-53": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
     "aws-cdk-lib": "2.232.1",
     "constructs": "^10.0.0"
   },

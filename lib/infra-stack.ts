@@ -23,7 +23,6 @@ export class InfraStack extends cdk.Stack {
       containers,
     });
 
-    // DynamoDB table for service launch locks
     const launchLocksTable = new dynamodb.Table(this, "LaunchLocks", {
       partitionKey: {
         name: "serviceName",
@@ -57,26 +56,19 @@ export class InfraStack extends cdk.Stack {
           containers.serviceAutoScalingGroup.autoScalingGroupName,
         PROXY_CONTAINER_NAME: Containers.PROXY_CONTAINER_NAME,
         SERVICE_CONTAINER_NAME: Containers.SERVICE_CONTAINER_NAME,
-        HOSTED_ZONE_ID: networking.hostedZone.hostedZoneId,
         LAUNCH_LOCKS_TABLE_NAME: launchLocksTable.tableName,
       },
     });
 
     const cfnFunction = wrapper.serverFunction.lambdaFunction.node
       .defaultChild as lambda.CfnFunction;
-    // Timeout increased to 15 minutes to handle:
-    // - EC2 instance scaling (up to 3 minutes)
-    // - Task launches (up to 5 minutes)
-    // - DNS propagation wait (up to 90 seconds)
-    // - Buffer for network delays
-    cfnFunction.timeout = 900; // 15 minutes
+    cfnFunction.timeout = 900;
 
     wrapper.serverFunction.lambdaFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
           "ecs:RunTask",
-          "ecs:StopTask",
           "ecs:ListTasks",
           "ecs:DescribeTasks",
           "ecs:ListContainerInstances",
@@ -86,16 +78,18 @@ export class InfraStack extends cdk.Stack {
       }),
     );
 
+    const passRoleArns = [
+      containers.proxyTaskDefinition.taskRole.roleArn,
+      containers.proxyTaskDefinition.executionRole?.roleArn,
+      containers.serviceTaskDefinition.taskRole.roleArn,
+      containers.serviceTaskDefinition.executionRole?.roleArn,
+    ].filter((arn): arn is string => Boolean(arn));
+
     wrapper.serverFunction.lambdaFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["iam:PassRole"],
-        resources: [
-          containers.proxyTaskDefinition.taskRole.roleArn,
-          containers.proxyTaskDefinition.executionRole?.roleArn || "",
-          containers.serviceTaskDefinition.taskRole.roleArn,
-          containers.serviceTaskDefinition.executionRole?.roleArn || "",
-        ].filter(Boolean),
+        resources: passRoleArns,
       }),
     );
 
@@ -110,10 +104,7 @@ export class InfraStack extends cdk.Stack {
       }),
     );
 
-    // Grant DynamoDB permissions
     launchLocksTable.grantReadWriteData(wrapper.serverFunction.lambdaFunction);
-
-    // Grant autoscaler access to lock table for distributed locking
     launchLocksTable.grantReadWriteData(automation.autoscaler);
     automation.autoscaler.addEnvironment(
       "LAUNCH_LOCKS_TABLE_NAME",

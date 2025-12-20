@@ -33,7 +33,6 @@ export const handler = async (
     return;
   }
 
-  // Only handle Fargate (proxy) task cleanup - delete Route53 record when stopped
   if (launchType === "FARGATE" && lastStatus === "STOPPED") {
     await deleteRoute53Record(hostedZoneId, serviceName, domain);
   }
@@ -57,17 +56,15 @@ async function deleteRoute53Record(
   domain: string,
 ): Promise<void> {
   const recordName = `${serviceName}.${domain}`;
-  const normalizedRecordName = `${recordName}.`; // Route53 returns names with trailing dot
+  const normalizedRecordName = `${recordName}.`;
 
   try {
-    // Find all matching A records for this service name
-    // (should only be one, but handle edge case of multiple)
     const listResponse = await route53Client.send(
       new ListResourceRecordSetsCommand({
         HostedZoneId: hostedZoneId,
         StartRecordName: recordName,
         StartRecordType: "A",
-        MaxItems: 100, // Get all matching records, not just one
+        MaxItems: 100,
       }),
     );
 
@@ -87,7 +84,6 @@ async function deleteRoute53Record(
       );
     }
 
-    // Delete all matching records
     for (const record of matchingRecords) {
       if (record.ResourceRecords && record.ResourceRecords.length > 0) {
         try {

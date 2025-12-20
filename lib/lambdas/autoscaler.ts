@@ -21,7 +21,7 @@ import type { EventBridgeEvent } from "aws-lambda";
 
 const ecsClient = new ECSClient();
 const autoScalingClient = new AutoScalingClient();
-const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient());
 
 const SERVICE_CLUSTER = process.env.SERVICE_CLUSTER!;
 const SERVICE_ASG_NAME = process.env.SERVICE_ASG_NAME!;
@@ -52,7 +52,10 @@ async function acquireAutoscalerLock(): Promise<boolean> {
           lockedAt: now,
           ttl,
         },
-        ConditionExpression: "attribute_not_exists(serviceName) OR ttl < :now",
+        ConditionExpression: "attribute_not_exists(serviceName) OR #ttl < :now",
+        ExpressionAttributeNames: {
+          "#ttl": "ttl",
+        },
         ExpressionAttributeValues: {
           ":now": now,
         },
@@ -61,11 +64,9 @@ async function acquireAutoscalerLock(): Promise<boolean> {
     return true;
   } catch (error: any) {
     if (error.name === "ConditionalCheckFailedException") {
-      console.log("Autoscaler lock already held, skipping this invocation");
       return false;
     }
     console.error("Error acquiring autoscaler lock:", error);
-    // On error, proceed anyway to avoid blocking autoscaling
     return true;
   }
 }
@@ -93,21 +94,17 @@ export const handler = async (
     | undefined
     | Record<string, unknown>,
 ): Promise<void> => {
-  // Acquire lock to prevent concurrent autoscaler executions
   const lockAcquired = await acquireAutoscalerLock();
   if (!lockAcquired) {
     return;
   }
 
   try {
-    // Handle manual invocations, scheduled events, or events without detail
     if (!event || !("detail" in event) || !event.detail) {
-      console.log("Manual or scheduled autoscaler check");
       await evaluateAndScale();
       return;
     }
 
-    // Handle task state change events
     const { detail } = event as EventBridgeEvent<"ECS Task State Change", Task>;
     const { clusterArn, launchType, lastStatus } = detail;
 
@@ -124,11 +121,6 @@ export const handler = async (
       return;
     }
 
-    console.log("Task state change triggered autoscaler", {
-      lastStatus,
-      clusterName,
-    });
-
     await evaluateAndScale();
   } finally {
     await releaseAutoscalerLock();
@@ -136,37 +128,22 @@ export const handler = async (
 };
 
 async function evaluateAndScale(): Promise<void> {
-  // Get current state atomically (as much as possible)
   const [tasks, instances] = await Promise.all([
     listActiveTasks(),
     listContainerInstances(),
   ]);
 
-  console.log("Autoscaler evaluation", {
-    taskCount: tasks.length,
-    instanceCount: instances.length,
-  });
-
   if (instances.length === 0) {
     const requiredInstances = Math.ceil(tasks.length / MAX_TASKS_PER_INSTANCE);
-    console.log("No instances, calculating required", { requiredInstances });
     if (requiredInstances > 0) {
       await setAutoScalingGroupCapacity(requiredInstances);
     }
     return;
   }
 
-  // Calculate task counts per instance
   const instanceTaskCounts = await getInstanceTaskCounts(instances, tasks);
-
-  // Update instance protection BEFORE making scaling decisions
-  // This ensures instances with tasks are protected from scale-in
-  // Note: There's still a small race window where tasks could be placed
-  // between protection update and scaling, but the lock minimizes this
   await updateInstanceProtection(instances, instanceTaskCounts);
 
-  // Re-fetch instances after protection update to get latest state
-  // (though instances list shouldn't change immediately)
   const totalTasks = tasks.length;
   const totalInstances = instances.length;
   const emptyInstances = instances.filter(
@@ -179,23 +156,12 @@ async function evaluateAndScale(): Promise<void> {
     emptyInstances,
   );
 
-  console.log("Scale decision", {
-    totalTasks,
-    totalInstances,
-    emptyInstances,
-    desiredCapacity,
-  });
-
   if (desiredCapacity !== totalInstances) {
-    console.log("Scaling ASG", { from: totalInstances, to: desiredCapacity });
     await setAutoScalingGroupCapacity(desiredCapacity);
-  } else {
-    console.log("No scaling needed - capacity matches desired");
   }
 }
 
 async function listActiveTasks(): Promise<string[]> {
-  // List both RUNNING and PENDING to avoid scaling down while tasks are starting
   const [running, pending] = await Promise.all([
     listTasksByStatus("RUNNING"),
     listTasksByStatus("PENDING"),

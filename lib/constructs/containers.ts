@@ -33,10 +33,12 @@ export class Containers extends Construct {
       vpc: props.networking.vpc,
     });
 
+    const instanceType = this.node.tryGetContext("instanceType") || "t3.xlarge";
+
     this.serviceAutoScalingGroup = this.serviceCluster.addCapacity(
       "Ec2Capacity",
       {
-        instanceType: new ec2.InstanceType("t3.micro"),
+        instanceType: new ec2.InstanceType(instanceType),
         minCapacity: 0,
         maxCapacity: 10,
         desiredCapacity: 0,
@@ -52,7 +54,6 @@ export class Containers extends Construct {
       },
     );
 
-    // Grant Route53 permissions to proxy task for DNS registration
     this.proxyTaskDefinition.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,

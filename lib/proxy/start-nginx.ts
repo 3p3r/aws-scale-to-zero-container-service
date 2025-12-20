@@ -19,7 +19,6 @@ server {
     listen ${proxyPort};
     server_name _;
 
-    # Health check endpoint that always returns 200 (for ECS health checks)
     location = /health {
         access_log off;
         default_type text/plain;
