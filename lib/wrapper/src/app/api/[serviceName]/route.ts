@@ -19,11 +19,9 @@ import pWaitFor from "p-wait-for";
 const ecs = new ECSClient();
 const autoscaling = new AutoScalingClient();
 
-const TASK_RUNNING_TIMEOUT_MS = 300_000;
-const PROXY_ACCESSIBLE_TIMEOUT_MS = 90_000;
+const TASK_HEALTHY_TIMEOUT_MS = 300_000;
 const EC2_INSTANCE_JOIN_TIMEOUT_MS = 180_000;
 const TASK_CHECK_INTERVAL_MS = 3_000;
-const PROXY_CHECK_INTERVAL_MS = 2_000;
 const EC2_CAPACITY_CHECK_INTERVAL_MS = 5_000;
 
 const config = {
@@ -107,24 +105,19 @@ export async function GET(
       findTask(config.serviceCluster, serviceName, "EC2"),
     ]);
 
-    const proxyRunning = proxyTask?.status === "RUNNING";
-    const serviceRunning =
-      serviceTask?.status === "RUNNING" && !!serviceTask.privateIp;
+    const proxyHealthy = proxyTask?.healthStatus === "HEALTHY";
+    const serviceHealthy =
+      serviceTask?.healthStatus === "HEALTHY" && !!serviceTask.privateIp;
 
     if (checkStatus) {
-      let isAccessible = false;
-      if (proxyRunning && serviceRunning) {
-        isAccessible = await checkProxyAccessible(serviceName);
-      }
-
-      return createResponse(isAccessible ? "ready" : "starting", serviceUrl);
+      return createResponse(
+        proxyHealthy && serviceHealthy ? "ready" : "starting",
+        serviceUrl,
+      );
     }
 
-    if (proxyRunning && serviceRunning) {
-      const isAccessible = await checkProxyAccessible(serviceName);
-      if (isAccessible) {
-        return createResponse("ready", serviceUrl);
-      }
+    if (proxyHealthy && serviceHealthy) {
+      return createResponse("ready", serviceUrl);
     }
 
     const lockResult = await acquireLock(serviceName);
@@ -139,7 +132,11 @@ export async function GET(
         findTask(config.serviceCluster, serviceName, "EC2"),
       ]);
 
-      if (recheckProxy && recheckService && recheckService.privateIp) {
+      if (
+        recheckProxy?.healthStatus === "HEALTHY" &&
+        recheckService?.healthStatus === "HEALTHY" &&
+        recheckService.privateIp
+      ) {
         try {
           await releaseLock(serviceName);
           lockReleased = true;
@@ -149,10 +146,9 @@ export async function GET(
         return createResponse("ready", serviceUrl);
       }
 
-      let serviceIp = recheckService?.privateIp;
       let serviceTaskArn = recheckService?.arn;
 
-      if (!serviceTaskArn || !serviceIp) {
+      if (!serviceTaskArn) {
         let retries = 0;
         const maxRetries = 3;
         while (retries <= maxRetries) {
@@ -174,17 +170,15 @@ export async function GET(
         if (!serviceTaskArn) {
           throw new Error("Failed to launch service task after retries");
         }
-
-        const runningService = await waitForTaskRunning(
-          config.serviceCluster,
-          serviceName,
-          "EC2",
-          serviceTaskArn,
-        );
-        serviceIp = runningService.privateIp;
-        serviceTaskArn = runningService.arn;
       }
 
+      const healthyService = await waitForTaskHealthy(
+        config.serviceCluster,
+        serviceName,
+        "EC2",
+        serviceTaskArn,
+      );
+      const serviceIp = healthyService.privateIp;
       if (!serviceIp) {
         throw new Error("Service task has no private IP");
       }
@@ -193,13 +187,14 @@ export async function GET(
 
       if (!proxyTaskArn) {
         proxyTaskArn = await launchProxyTask(serviceName, serviceIp);
-        await waitForTaskRunning(
-          config.proxyCluster,
-          serviceName,
-          "FARGATE",
-          proxyTaskArn,
-        );
       }
+
+      await waitForTaskHealthy(
+        config.proxyCluster,
+        serviceName,
+        "FARGATE",
+        proxyTaskArn,
+      );
 
       try {
         await releaseLock(serviceName);
@@ -207,8 +202,6 @@ export async function GET(
       } catch (error) {
         console.warn(`[${serviceName}] Failed to release lock:`, error);
       }
-
-      await waitForProxyAccessible(serviceName, PROXY_ACCESSIBLE_TIMEOUT_MS);
 
       return createResponse("ready", serviceUrl);
     } finally {
@@ -242,7 +235,7 @@ export async function GET(
 
 interface TaskInfo {
   arn: string;
-  status: string;
+  healthStatus?: string;
   privateIp?: string;
 }
 
@@ -316,7 +309,7 @@ async function findTask(
 
       return {
         arn: task.taskArn ?? "",
-        status: task.lastStatus ?? "UNKNOWN",
+        healthStatus: task.healthStatus,
         privateIp,
       };
     }
@@ -325,26 +318,26 @@ async function findTask(
   return null;
 }
 
-async function waitForTaskRunning(
+async function waitForTaskHealthy(
   cluster: string,
   serviceName: string,
   launchType: "FARGATE" | "EC2",
   taskArn: string,
-  timeoutMs: number = TASK_RUNNING_TIMEOUT_MS,
+  timeoutMs: number = TASK_HEALTHY_TIMEOUT_MS,
 ): Promise<TaskInfo> {
-  const requirePrivateIp = launchType === "EC2";
-
   await pWaitFor(
     async () => {
       const found = await findTask(cluster, serviceName, launchType);
       const normalizeArn = (arn: string) => arn.trim();
-      if (found && normalizeArn(found.arn) === normalizeArn(taskArn)) {
-        if (
-          found.status === "RUNNING" &&
-          (!requirePrivateIp || found.privateIp)
-        ) {
-          return true;
+      if (
+        found &&
+        normalizeArn(found.arn) === normalizeArn(taskArn) &&
+        found.healthStatus === "HEALTHY"
+      ) {
+        if (launchType === "EC2" && !found.privateIp) {
+          return false;
         }
+        return true;
       }
       return false;
     },
@@ -355,51 +348,13 @@ async function waitForTaskRunning(
   );
 
   const task = await findTask(cluster, serviceName, launchType);
-  if (!task) {
+  if (!task || task.healthStatus !== "HEALTHY") {
     throw new Error(
-      `Timeout waiting for ${launchType} task ${taskArn} to be RUNNING`,
+      `Timeout waiting for ${launchType} task ${taskArn} to be HEALTHY`,
     );
   }
 
   return task;
-}
-
-async function checkProxyAccessible(serviceName: string): Promise<boolean> {
-  if (!SERVICE_NAME_REGEX.test(serviceName)) {
-    return false;
-  }
-
-  const url = `http://${serviceName}.${config.domain}:9060/health`;
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      signal: AbortSignal.timeout(3000),
-    });
-    return response.ok;
-  } catch (error) {
-    return false;
-  }
-}
-
-async function waitForProxyAccessible(
-  serviceName: string,
-  timeoutMs: number,
-): Promise<void> {
-  try {
-    await pWaitFor(
-      async () => {
-        return await checkProxyAccessible(serviceName);
-      },
-      {
-        interval: PROXY_CHECK_INTERVAL_MS,
-        timeout: timeoutMs,
-      },
-    );
-  } catch (error) {
-    console.warn(
-      `[${serviceName}] Proxy not accessible via DNS after ${timeoutMs}ms`,
-    );
-  }
 }
 
 async function ensureEc2Capacity(): Promise<void> {
